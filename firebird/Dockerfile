@@ -5,6 +5,13 @@ MAINTAINER Patrick DUBUIS <pdubuis@visiativ.com>
 
 # ENV DEBIAN_FRONTEND noninteractive
 
+# On active la timezone France...
+ENV TIMEZONE Europe/Paris
+
+RUN echo ZONE="$TIMEZONE" > /etc/sysconfig/clock && \
+    cp "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
+
+
 # Ajout du dépôt EPEL + installation firebird SS
 RUN	yum install -y epel-release && \
 	yum -y install firebird-superserver
