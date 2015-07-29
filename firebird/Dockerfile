@@ -3,8 +3,6 @@ FROM centos:6
 
 MAINTAINER Patrick DUBUIS <pdubuis@visiativ.com>
 
-# ENV DEBIAN_FRONTEND noninteractive
-
 # On active la timezone France pour MAJ Date FB OK...
 ENV TIMEZONE Europe/Paris
 
@@ -22,11 +20,18 @@ RUN	yum install -y epel-release && \
 
 # Les logs FB (+ éventuellement Audit, etc...)
 VOLUME ["/var/log/firebird"]
+
 # La config FB
 VOLUME ["/etc/firebird"]
 
-# Data system
+# Data system (security.fdb, udf Novaxel, etc...)
 VOLUME ["/var/lib/firebird/system"]
+
+# Copy du fichier de configuration Firebird spécifique
+COPY firebird.conf /etc/firebird
+
+# UDF Novaxel
+COPY udf/* /var/lib/firebird/system/udf/
 
 EXPOSE 3050/tcp
 
