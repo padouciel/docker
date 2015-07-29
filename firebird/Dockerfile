@@ -5,7 +5,7 @@ MAINTAINER Patrick DUBUIS <pdubuis@visiativ.com>
 
 # ENV DEBIAN_FRONTEND noninteractive
 
-# On active la timezone France...
+# On active la timezone France pour MAJ Date FB OK...
 ENV TIMEZONE Europe/Paris
 
 RUN echo ZONE="$TIMEZONE" > /etc/sysconfig/clock && \
