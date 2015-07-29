@@ -28,7 +28,7 @@ VOLUME ["/etc/firebird"]
 VOLUME ["/var/lib/firebird/system"]
 
 # Copy du fichier de configuration Firebird spécifique
-COPY firebird.conf /etc/firebird
+COPY firebird.conf /etc/firebird/
 
 # UDF Novaxel
 COPY udf/* /var/lib/firebird/system/udf/
