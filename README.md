@@ -3,6 +3,6 @@ Docker images for Novaxel Application Server
 
 For Testing Docker Only...
 
-Centents :
+Contents :
 - Firebird Dockerfile
 - novaappserver Dockerfile (TODO)
