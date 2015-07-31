@@ -10,7 +10,7 @@ Based on :
 ```
 docker pull padouciel/firebird 
 ```
-Notice : *the repository is private for now*
+Notice : *the docker hub repository is private for now*
 
 ## Use (for example) :
 ```
@@ -29,3 +29,4 @@ docker run --name fbclient --rm  --link fbserver:fbserver  --volumes-from fbserv
 ```
 I use it to start a container for viewing log or other things for a running "fbserver" container...
 
+See the Dockerfile for more information...
