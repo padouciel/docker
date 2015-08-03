@@ -1,6 +1,5 @@
 # Mise en place docker pour novaappserver
-<a name="instserv">
-# Environnement serveur Dev :
+## Environnement serveur Dev :
 Les éléments suivants ont été installés sur le serveur dev.cloudnovaxel.fr :
 
 - bash_completion (from epel)
@@ -24,7 +23,7 @@ curl -L https://github.com/docker/compose/releases/download/1.3.3/docker-compose
 chmod a+x /opt/docker-tools/docker-compose
 ```
 
-- docker-compose bash completion :(https://docs.docker.com/compose/completion/)
+- docker-compose bash completion : (https://docs.docker.com/compose/completion/)
 ```shell
  curl -L https://raw.githubusercontent.com/docker/compose/$(docker-compose --version | awk 'NR==1{print $NF}')/contrib/completion/bash/docker-compose > /etc/bash_completion.d/docker-compose
 ```
@@ -39,4 +38,4 @@ docker pull registry
 
 # Mise en place registry
 
-Voir [installation serveur](#instserv)
+Voir [installation serveur](#Environnement-serveur-Dev)
