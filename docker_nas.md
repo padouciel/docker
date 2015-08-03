@@ -1,5 +1,6 @@
 # Mise en place docker pour novaappserver
-## Environnement serveur Dev :
+## Environnement serveur Dev
+
 Les éléments suivants ont été installés sur le serveur dev.cloudnovaxel.fr :
 
 - bash_completion (from epel)
@@ -36,6 +37,6 @@ chmod a+x /opt/docker-tools/docker-compose
 docker pull registry
 ```
 
-# Mise en place registry
+## Mise en place registry
 
 Voir [installation serveur](#Environnement-serveur-Dev)
