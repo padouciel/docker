@@ -1,13 +1,13 @@
 ########################################################################################################################
 # Serveur d'application Novaxel
 # Installe :
-# - moteur de script (depuis nas-client)
+# - moteur de script (depuis nas-toolbox)
 # - binaires NAS (64 bits)
 # - Fichiers WEB
 ########################################################################################################################
 
 
-FROM padouciel/nas-client:latest
+FROM padouciel/nas-toolbox:latest
 
 MAINTAINER Patrick DUBUIS <pdubuis@visiativ.com>
 
@@ -42,7 +42,8 @@ RUN	mkdir -p /opt/novaxel/novaappserver && \
 	rm -f /novaappserver.tar.gz && \
 	mkdir -p /opt/novaxel/htdocs && \
 	cd /opt/novaxel/htdocs && \
-	7za e -y /www_2.8.4.21_NAS2.6.9.0_APP1.46.6_BASE_V40.7z
+	7za e -y /www_2.8.4.21_NAS2.6.9.0_APP1.46.6_BASE_V40.7z && \
+	rm -f /www_2.8.4.21_NAS2.6.9.0_APP1.46.6_BASE_V40.7z
 	
 # Création utilisateur NAS
 RUN useradd -r -c "NAS system User" -d /opt/novaxel/novaappserver -M -s /bin/bash novaappserver
@@ -59,8 +60,13 @@ VOLUME ["/var/log/novaappserver"]
 # Volume config (certs, etc...)
 VOLUME ["/et/opt/novaappserver"]
 
-COPY conf/ /etc/opt/novaappserver.conf
+# Droits d'écriture sur le répertoire temp pour l'utilisateur système NAS
+RUN	mkdir -p /opt/novaxel/htdocs/tmp && \
+	chown -R novaappserver:novaappserver /opt/novaxel/htdocs/tmp
+
+COPY conf/ /etc/opt/novaappserver/
 
 # TODO
 # ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
 ENTRYPOINT ["/bin/bash"]
+
