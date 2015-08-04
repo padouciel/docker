@@ -11,17 +11,16 @@ RUN echo ZONE="$TIMEZONE" > /etc/sysconfig/clock && \
 
 RUN yum install -y tar glibc.i686
 
-COPY novatools.tar.gz /
+COPY nas-toolbox.tar.gz /
 
 # Préparation du répertoire de destination
-RUN	mkdir -p /opt/novaxel/novatools && \
+RUN	mkdir -p /opt && \
 	cd / && \
-	tar xzvf /novatools.tar.gz && \
-	rm -f /novatools.tar.gz && \
-	chown -R root:root /opt/novaxel && \
+	tar xzvf /nas-toolbox.tar.gz && \
+	rm -f /nas-toolbox.tar.gz && \
+	chown -R root:root /opt && \
 	echo "export LD_LIBRARY_PATH=/opt/novaxel/novatools/libs" >> $HOME/.bashrc && \
-	echo "export FIREBIRD=/opt/novaxel/novatools/libs" >> $HOME/.bashrc && \
-	echo "PATH=${PATH}:/opt/novaxel/novatools:/opt/novaxel/novatools/bin" >> $HOME/.bashrc
+	echo "PATH=${PATH}:/opt/novaxel/novatools:/opt/firebird/bin" >> $HOME/.bashrc
 	
 # TODO
 # ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
