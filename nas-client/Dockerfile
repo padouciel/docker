@@ -17,7 +17,11 @@ COPY novatools.tar.gz /
 RUN	mkdir -p /opt/novaxel/novatools && \
 	cd / && \
 	tar xzvf /novatools.tar.gz && \
-	rm -f /novatools.gz
+	rm -f /novatools.tar.gz && \
+	chown -R root:root /opt/novaxel && \
+	echo "export LD_LIBRARY_PATH=/opt/novaxel/novatools/libs" >> $HOME/.bashrc && \
+	echo "export FIREBIRD=/opt/novaxel/novatools/libs" >> $HOME/.bashrc && \
+	echo "PATH=${PATH}:/opt/novaxel/novatools:/opt/novaxel/novatools/bin" >> $HOME/.bashrc
 	
 # TODO
 # ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
