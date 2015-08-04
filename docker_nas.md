@@ -38,14 +38,14 @@ docker pull registry
 ```
 
 ## Mise en place dépôt local github (config local)
-- créer un répertoire de travail local
+- créer un répertoire de travail
 - git init
 - git remote add -f -t master -m master origin https://github.com/padouciel/docker.git
 - git merge origin
 - git config push.default simple
 - git config user.name padouciel
 - git config user.email "padouciel@gmail.com"
-
+- git push --set-upstream origin master
 
 ## Mise en place registry
 
