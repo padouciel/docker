@@ -1,0 +1,38 @@
+FROM centos:6
+
+
+MAINTAINER Patrick DUBUIS <pdubuis@visiativ.com>
+
+# On active la timezone France pour MAJ Date FB OK...
+ENV TIMEZONE Europe/Paris
+
+RUN echo ZONE="$TIMEZONE" > /etc/sysconfig/clock && \
+    cp "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
+
+
+# Ajout du dépôt EPEL + installation firebird SS
+RUN	yum install -y epel-release && \
+	yum -y install firebird-superserver
+	
+# Nous utiliserons (pour l'instant) un "bind" sur le host (docker run -v x:y)
+# À voir plus tard...
+# VOLUME ["/databases"]
+
+# Les logs FB (+ éventuellement Audit, etc...)
+VOLUME ["/var/log/firebird"]
+
+# La config FB
+VOLUME ["/etc/firebird"]
+
+# Data system (security.fdb, udf Novaxel, etc...)
+VOLUME ["/var/lib/firebird/system"]
+
+# Copy du fichier de configuration Firebird spécifique
+COPY firebird.conf /etc/firebird/
+
+# UDF Novaxel
+COPY udf/* /var/lib/firebird/system/udf/
+
+EXPOSE 3050/tcp
+
+ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
