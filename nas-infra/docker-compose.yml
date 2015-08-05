@@ -1,0 +1,15 @@
+nas:
+#  build: ../nas-server
+  image: "padouciel/nas-server"
+  ports : 
+    - "8080:8080"
+  links: 
+    - fbserver
+  volumes_from: 
+    - fbserver
+
+fbserver:
+#  build: ../firebird
+  volumes: 
+    - /var/lib/firebird:/srv/firebird
+  image: "padouciel/firebird"
