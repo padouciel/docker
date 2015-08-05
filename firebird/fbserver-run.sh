@@ -1,2 +1,2 @@
 #!/bin/sh
-docker run --name fbserver -p 3050:3050 -v /var/lib/firebird:/srv/firebird -d novaappserver/firebird:3
+docker run --name fbserver -p 3050:3050 -v /var/lib/firebird:/srv/firebird -d padouciel/firebird

@@ -10,10 +10,16 @@ RUN echo ZONE="$TIMEZONE" > /etc/sysconfig/clock && \
     cp "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
 
 
-# Ajout du dépôt EPEL + installation firebird SS
-RUN	yum install -y epel-release && \
-	yum -y install firebird-superserver
-	
+# Installaiton des packages firebird
+COPY	firebird*.rpm /tmp/
+
+WORKDIR	/tmp
+
+RUN yum -y localinstall firebird-*.rpm && \
+	rm -f firebird*.rpm
+
+WORKDIR /
+
 # Nous utiliserons (pour l'instant) un "bind" sur le host (docker run -v x:y)
 # À voir plus tard...
 # VOLUME ["/databases"]
@@ -21,7 +27,7 @@ RUN	yum install -y epel-release && \
 # Les logs FB (+ éventuellement Audit, etc...)
 VOLUME ["/var/log/firebird"]
 
-# La config FB
+# La config FB pour NAS
 VOLUME ["/etc/firebird"]
 
 # Data system (security.fdb, udf Novaxel, etc...)
