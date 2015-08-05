@@ -1,0 +1,820 @@
+{
+-- v40
+Ajout de 
+ - Add_DOMPARAM('DOMAIN','WEB_URL',cWEB_URL,'',clParam_alpha)
+ - Add_DOMPARAM('DOMAIN','NAS_URL',cNAS_URL,'',clParam_alpha)
+ 
+ - SET_GEDPARAM_DICO('NOTIFICATION','DECLENCHEUR','0',lBlob) then exit;    
+ - SET_GEDPARAM_DICO('EVENEMENTS','NIVEAU_JOURNALISATION','31',lBlob) then exit;    
+ - SET_GEDPARAM_DICO('INTERFACE','BARRE_OUTILS','0',lBlob) then exit;
+ - SET_GEDPARAM_DICO('INTERFACE','FOND_POSITION','0',lBlob) then exit;    
+
+-- v36 
+- Passage de access_mode à 2 (full)
+- plus de licence PANIERES_WEB_DOSSIER (ni GEDPARAM)
+}
+Program Test;
+const
+  //Compte de l'administrateur du domaine
+  cURL='http://localhost';
+  cAdminLogin='Admin';
+  cAdminPassword='AdminPass';
+  cFiltreStat='*';   
+
+  //Compte du propriétaire du sous-domaine.
+  cOWNER_DOMAIN='DEMO';
+  cOWNER_NAME='S.A DEMO';  
+  cOWNER_LOG='DEMO';
+  cOWNER_PASS='DEMO';
+
+  //Contact du propriétaire du sous-domaine.
+  cPREFIX='';
+  cNAME=cOWNER_NAME;
+  cFIRSTNAME='';
+  cEMAIL='';
+  cTEL='';
+  cADRESS='';
+  cZIP_CODE='';
+  cREGION='';
+  cCITY='';
+  cCOUNTRY='';  
+  //Utilisateur
+  cGEDUSER_LOG='DEMO';
+  cGEDUSER_PASS='DEMO';
+  
+  //Pour les partages
+  cPROFIL_PARTAGE='Partage';
+  cGROUPE_PARTAGE='Partage';
+  cGEDUSER_PARTAGE='PartageConsultation';
+  
+  //Bibliothèque visible par l'utilisateur
+  cBIB_DEMO='DEMO';
+  cBIB_REP='C:\novaxel\cloud\bibdemo\';
+  cBIB_DEMO2='DEMO_5c';
+  cBIB_REP2='C:\novaxel\cloud\bibdemo_5c\';  
+
+  //Constantes techniques
+
+  //URL interne d'accès au domaine, utilisé par le moteur script pour accéder loaclement au domaine
+  cNAS_URL='http://localhost';
+   
+  //UL d'un site web associé au serveur NAS= accès WEB externe, utilisé dans pour construire l'adresse d'acccès au domain
+  cWEB_URL='http://localhost';
+
+  //URL de téléchargement de la dernière version du client Novaxel 14
+  PACKAGE_DIR='C:\novaxel\cloud\PackageClient\';
+
+  
+  
+var
+  oNasDomClient:TNasDomClient;
+  lBlob:TstringList;
+  
+procedure OutputClear;
+begin
+     {$IFNDEF CONSOLE}
+           Memo.clear;
+     {$ENDIF}
+end;
+
+Function Connect:boolean;
+begin
+  OutputClear;
+  oNasDomClient:=TNasDomClient.create;
+  oNasDomClient.domainLogout;
+ 
+  // si on accepte les certificats self-signed
+  oNasDomClient.AcceptSelfSignedCertificate := False;
+  // si on veut bypasser la validation du certificat
+  oNasDomClient.RequiresCertificateValidation := False;
+  if not oNasDomClient.Connect(cURL) then
+  begin
+
+      output('Connexion NAS impossible sur ' + cURL);
+      output('error:' + oNasDomClient.Errcode + ',' + oNasDomClient.Errmsg);
+      oNasDomClient.Close;
+      exit;
+  end;
+  OutputClear;
+  output('Version NAS : ' +oNasDomClient.ServerVersion);
+  output('Type : '+oNasDomClient.ServerType);
+  if oNasDomClient.Encrypted then 
+    output('Cryptage activé : OUI')
+  else
+    output('Cryptage activé : NON');
+  output('Domaine : ' +oNasDomClient.DomainName+' version : '+oNasDomClient.DomainVersion);
+  Result:=True;
+  
+end;
+
+Function DomainLogin(Login,Password:string):boolean;
+begin
+  Result:=oNasDomClient.domainLogin(Login,Password);
+  if not Result then
+    output(oNasDomClient.Errmsg);
+end;
+
+
+Function Add_FBSERVER(name,Host,TunnelHost:string;TcpPort,TunnelPort:integer):boolean;
+var
+    FBServer:TFBserver;
+begin
+    if not oNasDomClient.fbservers.load(False) then exit;
+    if oNasDomClient.fbservers.find(name)<>nil then
+    begin
+        Result:=True; 
+        exit; // il existe déjà
+    end; 
+
+    FBServer:=TFBserver.Create(oNasDomClient);
+    FBServer.name:=name;
+    FBServer.FBADMLOGIN:='SYSDBA';
+    FBServer.FBADMPASSWD:='masterkey';
+    
+    FBServer.Host:=Host
+    FBServer.TcpPort:=TcpPort
+    FBServer.TunnelPort:= TunnelPort
+    FBServer.TunnelHost:= TunnelHost
+    
+    Result:=oNasDomClient.fbservers.Add(FBServer);
+    if not Result then
+        output(oNasDomClient.Errmsg);    
+end;
+
+Function Add_OWNER(subdomain,name,login,password,comment:string;isAdmin:boolean):boolean;
+var
+   Owner:TOwner;
+begin
+    if not oNasDomClient.owners.load(False) then exit;
+    if oNasDomClient.owners.find(login)<>nil then
+    begin
+        Result:=True; 
+        exit; // il existe déjà
+    end; 
+
+    Owner:=TOwner.Create(oNasDomClient);
+    Owner.subdomain:=subdomain;
+    Owner.name:=name;
+    Owner.login:=login;
+    Owner.comment:=Comment;
+    
+    Result:=oNasDomClient.owners.Add(Owner,password);
+    if Result then
+       Owner.IsAdmin:=isAdmin
+    else
+       output('owners.Add impossible'+oNasDomClient.Errmsg);   
+
+    // Définition du contact   
+    Owner.Contact.Prefix:=cPREFIX
+    Owner.Contact.Name := cNAME;
+    Owner.Contact.FirstName:=cFIRSTNAME;
+    Owner.Contact.Email:=cEMAIL;
+    Owner.Contact.Tel:=cTEL
+    Owner.Contact.Address:=cADRESS;
+    Owner.Contact.Zip_Code:=cZIP_CODE;
+    Owner.Contact.Region:=cREGION;
+    Owner.Contact.City:=cCITY;
+    Owner.Contact.Country:=cCOUNTRY;
+    
+    // on l'associe avec le owner
+    if not Owner.contact.update then
+    begin
+       output('Contact.update impossible'+CRLF+oNasDomClient.Errmsg);
+       exit;
+    end;
+    
+    Result:=True;
+         
+end;
+
+Function Add_BIB(owner_log,Title,dbpath,comment,ServerFB:string):boolean;
+var
+    oLibrary:TLibrary;
+    Owner:TOwner;
+//    oGlobalContTypes:Tconttypes;
+    OGconttype: TConttype;
+    Oconttype : TConttype;
+    oContactLib:TContact;
+begin
+    if not oNasDomClient.owners.load(False) then exit;
+    Owner:=oNasDomClient.owners.find(owner_log);
+    if owner=nil then
+    begin
+        output(oNasDomClient.Errmsg);
+        exit;
+    end;
+
+    if not Owner.Libraries.load(False) then 
+    begin
+        output(oNasDomClient.Errmsg);
+        exit;
+    end;
+    if owner.Libraries.find(Title)<>nil then  
+    begin
+        Result:=True; 
+        exit; // il existe déjà
+    end; 
+    oLibrary:=TLibrary.Create(oNasDomClient);
+    oLibrary.Title:=Title;
+    oLibrary.dbpath:=dbpath;
+    oLibrary.comment:=Comment;
+    oLibrary.Access_Mode:=2;   //0:lecture seul, 1:Dépose de document 2: full saas
+    
+    oNasDomClient.fbservers.load(False);
+    oLibrary.FbServer_Id:= oNasDomClient.fbservers.Find(ServerFB).id;
+    
+    Result:=Owner.libraries.add(oLibrary);
+
+    if not Result then
+    begin
+        output(oNasDomClient.Errmsg);
+        exit;
+    end;
+    
+    
+    //paramètres 
+    oNasDomClient.ContTypes.load(False);
+    //oGlobalContTypes := Tconttypes.Create(oNasDomClient, nil);
+    //oGlobalContTypes.Load(False);
+
+   
+{   0 : pas de mail
+   1 : mail si erreur de synchro seulement
+   2 : mail sur toutes les synchros} 
+   
+    //on ajout ce contact à la bibliothèque avec un type Technique
+    oLibrary.contacts.load(False);
+    if oLibrary.Contacts.Add(Owner.Contact) then
+     begin
+       //oLibrary.contacts.load(True);
+       oContactLib:=oLibrary.Contacts.GetFromId(Owner.Contact.id);
+       if oContactLib=nil then
+       begin
+          output(oNasDomClient.Errmsg);
+          exit;
+       end;
+       
+       OGconttype:=oNasDomClient.ContTypes.Find('Technique');
+       if OGconttype<>nil then
+       begin
+         Oconttype := TConttype.Create(Owner.NasDomClient);
+         Oconttype.id := OGconttype.id;
+         Oconttype.Name := OGconttype.Name;
+         Oconttype.SyncSendmail:=clSync_sendmail_always;         
+        
+         if not oContactLib.ContTypes.Add(Oconttype) then
+         begin
+              output(oNasDomClient.Errmsg);
+              exit;
+         end;
+         //Oconttype.SyncSendmail:=clSync_sendmail_always;
+         //Oconttype.update;
+       end;
+     end;    
+end;
+
+const
+  // valeurs du champ GEDGROUP_TYPE
+  RIGHTS_GROUP = 1;
+
+Function Add_GROUP(name,comment,profile,BibVisible:string):boolean;
+var
+    NewGedGroup:TGedGroup;
+    oProfile: TProfile;
+    oLibrary:TLibrary;
+    NewProfilID:integer;
+begin
+    Result:=false;
+    oNasDomClient.loggedOwner.Gedgroups.load(False);
+    NewGedGroup:=oNasDomClient.loggedOwner.Gedgroups.Find(name);
+    if NewGedGroup=nil then
+    begin
+        NewGedGroup:=TGedGroup.Create(oNasDomClient);
+        NewGedGroup.Group_Type:= RIGHTS_GROUP;
+        NewGedGroup.Name:=name;
+        NewGedGroup.Comment:=Comment;
+        
+        Result := oNasDomClient.loggedOwner.Gedgroups.Add(NewGedGroup);
+        if not Result then
+        begin
+             output(oNasDomClient.Errmsg);
+             exit;
+        end;    
+    end;
+
+    // NewGedGroup.Owner_Id := owner.id; <-- pas nécesssaire
+    if profile<>'' then
+    begin               
+      if not oNasDomClient.loggedOwner.Profiles.load(False) then exit;
+      oProfile:=oNasDomClient.loggedOwner.Profiles.find(Profile)
+      NewProfilID:=0;
+      if oProfile <>nil then
+            NewProfilID:=oProfile.id;
+      if NewGedGroup.Profile_Id<>NewProfilID then
+      begin
+          NewGedGroup.Profile_Id:=NewProfilID;
+          NewGedGroup.update;             // on ne met à jour qui si modif
+      end;
+          
+     end;
+    if BibVisible<>'' then
+    begin 
+         if not oNasDomClient.loggedOwner.Libraries.load(False) then exit;
+         oLibrary:=oNasDomClient.loggedOwner.Libraries.find(BibVisible);
+         
+         if oLibrary<>nil then
+         begin
+           NewGedGroup.libraries.load(False);
+           if NewGedGroup.libraries.find(oLibrary.title)=nil then
+             if not NewGedGroup.addlib(oLibrary.id,0) then
+               output(oNasDomClient.Errmsg); 
+         end;    
+    end;
+    Result:=  True;  
+end;
+
+Function SET_GROUP_USER(GroupePartage,UserLogin:string):boolean;
+var
+    GedGroup:TGedGroup;
+    oUser:TGedUser;
+begin
+     Result:=False;
+    oNasDomClient.loggedOwner.GedUsers.load(False); 
+    oUser:=oNasDomClient.loggedOwner.GedUsers.find(UserLogin);
+    if oUser=nil then
+    begin
+        output('l''utilisateur n''existe pas :'+UserLogin);
+        exit; 
+    end; 
+     
+     oNasDomClient.loggedOwner.Gedgroups.load(False);
+     GedGroup:= oNasDomClient.loggedOwner.Gedgroups.Find(GroupePartage);
+     if GedGroup=nil then
+     begin
+         output('le groupe '+GroupePartage+' n''existe pas.');
+         exit;
+     end;
+     
+     GedGroup.Gedusers.load(False);
+     if GedGroup.Gedusers.find(oUSer.login)=nil then 
+       if GedGroup.AddGeduser(oUSer.id) then
+       begin
+          oUser.GedGroup_Id:=GedGroup.id;
+          oUSer.update;
+       end;
+     
+     Result:=True;
+end;
+
+
+
+Function Add_USER(login,password,comment,Profile:string):boolean;
+var
+    oUser:TGedUser;
+    oProfile: TProfile;
+    profilid:integer;
+begin
+    if not oNasDomClient.loggedOwner.GedUsers.load(False) then exit;
+    if oNasDomClient.loggedOwner.GedUsers.find(login)<>nil then
+    begin
+        Result:=True; 
+        exit; // il existe déjà
+    end; 
+     profilID:=0;
+    if profile<>'' then
+    begin               
+      if not oNasDomClient.loggedOwner.Profiles.load(False) then exit;
+      oProfile:=oNasDomClient.loggedOwner.Profiles.find(Profile)
+      if oProfile =nil then
+       begin
+        Result:=True; 
+        exit; // il existe déjà
+       end;
+       profilID:=oProfile.id;
+    end;    
+
+    
+    oUser := TGedUser.Create(oNasDomClient);
+    oUser.login:=login;
+    oUser.comment:=Comment;
+    oUSer.Profile_Id:=profilID;
+    
+    Result:=oNasDomClient.loggedOwner.GedUsers.Add(oUser,password);
+    if not Result then
+        output(oNasDomClient.Errmsg);    
+end;
+
+
+Function Add_BIB_USER(login,TitleBib:string):boolean;
+var
+    oUser:TGedUser;
+    oLibrary:TLibrary;    
+begin
+    if not oNasDomClient.loggedOwner.GedUsers.load(False) then exit;
+    oUser:= oNasDomClient.loggedOwner.GedUsers.find(login);
+    if oUser=nil then exit; 
+
+    oUser.Libraries.load(False);
+    if oUser.Libraries.find(TitleBib)<>nil then
+    begin
+       Result:=True;   
+       exit; //existe déjà
+    end;
+
+
+    if not oNasDomClient.loggedOwner.Libraries.load(False) then exit; 
+    oLibrary:=oNasDomClient.loggedOwner.Libraries.find(TitleBib);
+    if oLibrary=nil then exit;
+       
+       
+    if not oUser.AddLib(oLibrary.id,0) then
+        output(oNasDomClient.Errmsg);
+    Result:=True; 
+end;
+
+Function Add_DOMPARAM(SECTION,NAME,VALUE,COMMENT:string;PARAMTYPE:integer):boolean;
+var
+  oParam:TDomParam;
+  ajout:boolean;
+begin
+  oNasDomClient.DomParams.load(False);
+  oParam:=  oNasDomClient.DomParams.Get(SECTION,NAME);
+  if oParam=nil then 
+  begin
+       output(SECTION+'\'+NAME+'n''est pas un paramètre standard !');
+       exit;
+  end;
+  
+  oParam.Section:=SECTION;
+  oParam.name:=NAME;
+  oParam.Value:=VALUE;
+  oParam.comment:=COMMENT;
+  oParam.ParamType:=PARAMTYPE;
+  
+  if ajout then
+    Result:=oNasDomClient.DomParams.add(oParam)
+  else
+     Result:=oParam.update;
+      
+  if not Result then
+     Output(oNasDomClient.Errmsg)  
+
+end;
+
+Function SET_GEDPARAM_DICO(SECTION,NAME,VALUE:string;lBlob:Tstringlist):boolean;
+var
+  oParam:TGedParam;
+begin
+  Result:=False;
+  oNasDomClient.GedParams.load(False);
+  oParam:=  oNasDomClient.GedParams.Find(SECTION,NAME);
+  if oParam=nil then
+  begin
+       output(SECTION+'\'+NAME+'n''est pas un paramètre standard !');
+       exit;
+  end;
+  oParam.DefaultValue:=VALUE;
+  Result:=oParam.update;
+  if not Result then
+     Output(oNasDomClient.Errmsg);
+     
+  if lBlob<>nil then   
+    oParam.DefaultBlob:=lBlob.text;     
+end;
+
+             
+             
+Function SET_PROFIL_PARAMVALUE(ProfileName,SECTION,NAME,VALUE: string):boolean;
+var
+     oParam:TGedParamValue;
+     oPRofile:TProfile;
+     ajout:boolean;
+     oGedparam: TGedParam;
+begin
+     CurrentOwner:=oNasDomClient.loggedOwner;
+     result:=False;
+     if not currentOwner.Profiles.load(False) then exit;
+     if not oNasDomClient.gedparams.load(false) then exit;
+     oProfile:=currentOwner.Profiles.find(ProfileName)
+  
+     ajout:=False;
+     oProfile.gedparamvalues.load(False);
+     oParam:=oPRofile.gedparamvalues.find(SECTION,NAME);
+     if oParam=nil then //    // CREATION d'un paramÃ¨tre
+     begin 
+          oParam := TGedParamValue.Create(oNasDomClient);
+          ajout:=True;
+     end;
+  
+     try
+       oGedParam := oNasDomClient.gedparams.find(SECTION, NAME);
+       if (oGedParam = nil) then
+       begin
+        output('le paramètre n''existe pas dans le dicitionnaire standard !');
+        exit;
+       end;
+             
+       oParam.gedparam_id := oGedParam.id;
+       
+       if oGedparam.paramType=ClParam_idGroup then
+       begin
+          oParam.Value:=intTostr(TgedGroup(currentOwner.GedGroups.find(cGROUPE_PARTAGE)).id);
+       end
+       else
+          oParam.Value:=VALUE;
+    
+       if Ajout then
+            Result:= oProfile.gedparamvalues.add(oParam)
+       else
+            Result:=oParam.update;
+
+     finally
+       if not Result then
+            Output(oNasDomClient.Errmsg+' : '+ProfileName+'\'+SECTION+'\'+NAME+'\'+VALUE);
+     end;
+  
+end;
+
+
+{Function SET_PROFIL_PARAMVALUE(ProfileName,SECTION,NAME,VALUE):boolean;
+var
+  oParam:TGedParamValue;
+  oPRofile:TProfile;
+  ajout:boolean;
+  oGedparam: TGedParam;
+begin
+  result:=False;
+  if not oNasDomClient.loggedOwner.Profiles.load(False) then exit;
+  oPRofile:=oNasDomClient.loggedOwner.Profiles.find(ProfileName)
+ 
+  //Dictionnaire standard
+  if not oNasDomClient.gedparams.load(false) then exit;
+
+  
+  oGedParam := oNasDomClient.gedparams.find(SECTION, NAME);
+  if (oGedParam = nil) then
+  begin
+      output(SECTION+'\'+NAME+'n''est pas un paramètre standard !');
+      exit;
+  end;
+
+  ajout:=False;
+  oProfile.gedparamvalues.load(False);
+  oParam:=oPRofile.gedparamvalues.find(SECTION,NAME);
+
+  if oParam then
+  begin
+      Result:= oProfile.gedparamvalues.add(oParam)
+  end
+  else
+  begin
+     oParam.Value:=VALUE;
+     Result:=oParam.update;
+  end;
+
+  if not Result then
+  begin
+     Output(oNasDomClient.Errmsg+' : '+ProfileName+'\'+SECTION+'\'+NAME+'\'+VALUE);
+  end;
+  
+end;}
+
+
+Function SET_USER_PARAMVALUE(UserLogin,SECTION,NAME,VALUE,COMMENT:string;PARAMTYPE:integer):boolean;
+var
+  oParam:TGedParamValue;
+  oParamDico:TGedParam;  
+  oUser:TGedUser;
+  ajout:boolean;
+
+begin
+  result:=False;
+  if not oNasDomClient.loggedOwner.GedUsers.load(False) then exit;
+  oUser:=oNasDomClient.loggedOwner.GedUsers.find(UserLogin)
+  
+  ajout:=False;
+  oUser.gedparamvalues.load(False);
+  oParam:=oUser.gedparamvalues.find(SECTION,NAME);
+  if oParam=nil then //    // CREATION d'un paramètre
+  begin 
+      oParam := TGedParamValue.Create(oNasDomClient);
+      ajout:=True;
+  end;
+  
+  oParamDico := oNasDomClient.gedparams.find(SECTION, NAME);
+  if (oParamDico = nil) then
+  begin
+    output('le paramètre n''existe pas dans le dicitionnaire standard !');
+    exit;
+  end;
+
+  oParam.gedparam_id := oParamDico.id;
+  //oParam.Section:=SECTION;
+  //oParam.name:=NAME;
+  oParam.Value:=VALUE;
+ 
+  if Ajout then
+      Result:= oUser.gedparamvalues.add(oParam)
+  else
+     Result:=oParam.update;
+
+  if not Result then
+     output(oNasDomClient.Errmsg)
+  
+end;
+
+Function SET_OWNER_PARAMVALUE(SECTION,NAME,VALUE,COMMENT:string;PARAMTYPE:integer):boolean;
+var
+  oParam:TGedParamValue;
+  oParamDico:TGedParam;
+  ajout:boolean;
+begin
+  result:=False;
+  oNasDomClient.gedparams.load(False);
+  oNasDomClient.loggedOwner.gedparamvalues.load(False);
+  ajout:=False;
+  oParam:=oNasDomClient.loggedOwner.gedparamvalues.find(SECTION,NAME);
+  if oParam=nil then //    // CREATION d'un paramètre
+  begin 
+      oParam := TGedParamValue.Create(oNasDomClient);
+      oParamDico := oNasDomClient.gedparams.find(SECTION, NAME);
+      if (oParamDico = nil) then
+      begin
+         output(SECTION+'\'+NAME+'n''est pas un paramètre standard !');
+         exit;
+      end;
+      Ajout:=True;
+      if oParamDico.paramType=ClParam_idGroup then
+      begin
+          oParam.Value:=intTostr(TgedGroup(currentOwner.GedGroups.find(cGROUPE_PARTAGE)).id);
+      end
+      else
+          oParam.Value:=VALUE;
+  end;
+  
+
+   if Ajout then
+   begin
+       oParam.gedparam_id := oParamDico.id;
+       Result:= oNasDomClient.loggedOwner.gedparamvalues.add(oParam)
+   end
+   else
+   begin
+       oParam.Value:=VALUE;
+        Result:=oParam.update;
+   end;
+
+   if not Result then
+        Output(oNasDomClient.Errmsg+' : \'+SECTION+'\'+NAME+'\'+VALUE);
+     
+  
+end;
+
+
+
+
+Function Add_PROFILDOMAINE(Name,comment:string):boolean;
+var
+    oProfile: TProfile;
+begin                    
+    if not oNasDomClient.loggedOwner.Profiles.load(False) then exit;
+    if oNasDomClient.loggedOwner.Profiles.find(name)<>nil then
+    begin
+        Result:=True; 
+        exit; // il existe déjà
+    end;
+    oProfile := TProfile.Create(oNasDomClient);
+    oProfile.Name := Name;
+    oProfile.comment:=Comment;
+    
+    Result:=oNasDomClient.loggedOwner.Profiles.Add(oProfile);
+    if not Result then
+        output(oNasDomClient.Errmsg);    
+end;
+
+  
+Begin                       
+   try  
+ 
+    if not Connect then exit;
+
+    // en tant qu'administrateur
+    if not DomainLogin(cAdminLogin,cAdminPassword) then exit;
+
+    if not Add_DOMPARAM('DOMAIN','WEB_URL',cWEB_URL,'',clParam_alpha) then exit;
+    if not Add_DOMPARAM('DOMAIN','NAS_URL',cNAS_URL,'',clParam_alpha) then exit;    
+         
+    if not Add_DOMPARAM('CLOUD_CLIENT','VERSION',intTostr(CLOUD_CLIENT_VERSION),'',clParam_integer) then exit;
+    if not Add_DOMPARAM('CLOUD_CLIENT','PACKAGE',PACKAGE_DIR,'',clParam_alpha) then exit;
+    
+    lBlob:=TstringList.create;
+    lBlob.add('0=Pas de log');
+    lBlob.add('1=Que les connections');
+    lBlob.add('3=Mises à jour (Ajouts/Suppressions/modifications/...');
+    lBlob.add('7=Consultations dossiers = ouverture du dossier');
+    lBlob.add('15=Consultations documents =téléchargement du document');
+    lBlob.add('31=Consultations documents =visu de l''aperçu');
+    if not SET_GEDPARAM_DICO('EVENEMENTS','NIVEAU_JOURNALISATION','31',lBlob) then exit;
+
+    lBlob.clear;
+    lBlob.add('0=Dernière connexion');
+    lBlob.add('1=Dernière synchronisation');
+    lBlob.add('2=Date spécifiée');
+    if not SET_GEDPARAM_DICO('NOTIFICATION','DECLENCHEUR','0',lBlob) then exit;    
+    
+
+    lBlob.clear;
+    lBlob.add('0=on voit tout');
+    lBlob.add('1=on cache les boutons (sauf les boutons de télé-chargement/edition)');
+    lBlob.add('2=on cache toute la barre');
+    if not SET_GEDPARAM_DICO('INTERFACE','BARRE_OUTILS','0',lBlob) then exit;
+    
+    lBlob.clear;
+    lBlob.add('0=centré');  
+    lBlob.add('1=en haut à gauche');
+    lBlob.add('2=en haut à droite');
+    lBlob.add('3=en bas à gauche');
+    lBlob.add('4=en bas à droite');
+    if not SET_GEDPARAM_DICO('INTERFACE','FOND_POSITION','0',lBlob) then exit;
+        
+
+    if not Add_OWNER(cOWNER_DOMAIN,cOWNER_NAME,cOWNER_LOG,cOWNER_PASS,'Commentaire',False) then exit;
+    if not Add_FBSERVER('Serveur Local','Localhost','',3050,0) then exit;
+    if not Add_BIB(cOWNER_LOG,cBIB_DEMO,cBIB_REP,'','Serveur Local') then exit;
+    if not Add_BIB(cOWNER_LOG,cBIB_DEMO2,cBIB_REP2,'','Serveur Local') then exit;
+        
+    // en tant que propriètaire
+    if not DomainLogin(cOWNER_LOG,cOWNER_PASS) then exit;
+    
+    //definition des paramètres pour le owner
+    if not SET_OWNER_PARAMVALUE('EVENEMENTS','NIVEAU_JOURNALISATION','31','',clParam_integer) then exit;
+    //if not SET_OWNER_PARAMVALUE('LICENCE','PANIERES_WEB_DOSSIER','1','',clParam_Boolean) then exit;
+    
+    if not Add_PROFILDOMAINE('Consultation','Profil de consultation') then exit;
+    if not SET_PROFIL_PARAMVALUE('Consultation','DROITS','AJOUTER','0') then exit;
+    if not SET_PROFIL_PARAMVALUE('Consultation','DROITS','MODIFIER','0') then exit;    
+    if not SET_PROFIL_PARAMVALUE('Consultation','DROITS','PURGER','0') then exit;    
+    if not SET_PROFIL_PARAMVALUE('Consultation','DROITS','SUPPRIMER','0') then exit;
+    if not SET_PROFIL_PARAMVALUE('Consultation','DROITS','CONSULTER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Consultation','DROITS','EDITER','0') then exit;
+    if not SET_PROFIL_PARAMVALUE('Consultation','DROITS','RECHERCHER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Consultation','DROITS','AFFICHER_NOTE','1') then exit;
+        
+    if not Add_PROFILDOMAINE('Edition','Profil d''édition') then exit;    
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','AJOUTER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','MODIFIER','1') then exit;    
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','PURGER','1') then exit;    
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','SUPPRIMER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','CONSULTER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','EDITER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','RECHERCHER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','AFFICHER_NOTE','1') then exit;
+    
+
+    if not Add_PROFILDOMAINE('Administation','Profil d''administration') then exit;    
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','ADMINISTRER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','AJOUTER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','MODIFIER','1') then exit;    
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','PURGER','1') then exit;    
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','SUPPRIMER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','CONSULTER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','EDITER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','RECHERCHER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','AFFICHER_NOTE','1') then exit;
+
+
+    //On ajout un utilisateur et ses paramètres
+    if not Add_USER(cGEDUSER_LOG,cGEDUSER_PASS,'utilisateur '+cGEDUSER_LOG,'Edition') then exit;
+    if not SET_USER_PARAMVALUE(cGEDUSER_LOG,'INTERFACE','FOND','','Image de fond',clParam_Image) then exit;    
+    
+    //on associe 1 bib à cet utilisateur
+    if not Add_BIB_USER(cGEDUSER_LOG,cBIB_DEMO) then exit;   
+    if not Add_BIB_USER(cGEDUSER_LOG,cBIB_DEMO2) then exit;
+
+    //******************************** PARTAGE ***************************************************
+    
+    //on Définit un profil de partage
+    if not Add_PROFILDOMAINE(cPROFIL_PARTAGE,'Profil pour le partage') then exit;    
+    if not SET_PROFIL_PARAMVALUE(cPROFIL_PARTAGE,'DROITS','CONSULTER','1') then exit;
+    if not SET_PROFIL_PARAMVALUE(cPROFIL_PARTAGE,'DROITS','RECHERCHER','0') then exit;
+    if not SET_PROFIL_PARAMVALUE(cPROFIL_PARTAGE,'DROITS','AFFICHER_NOTE','1') then exit;
+
+    
+    //On Ajoute un groupe de droit pour le partage WEB
+    if not Add_GROUP(cGROUPE_PARTAGE,'Groupe des utilisateurs utilisés pour les partages',cPROFIL_PARTAGE,cBIB_DEMO) then exit; //--->exception
+    if not SET_PROFIL_PARAMVALUE('Edition','DROITS','GROUPE_PARTAGE','1') then exit;    
+
+    //On ajout un utilisateur de consultation pour les paratages
+    if not Add_USER(cGEDUSER_PARTAGE,'','utilisateur pour partage','') then exit;
+   
+    //On affecte cet utilisateur au groupe PARTAGE WEB
+    if not SET_GROUP_USER(cGROUPE_PARTAGE,cGEDUSER_PARTAGE) then exit;  //-->exception
+   
+
+   finally
+    oNasDomClient.domainLogout;
+    oNasDomClient.Close;
+    oNasDomClient.free;
+   end;
+
+End.

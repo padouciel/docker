@@ -1,0 +1,2347 @@
+{
+	Mise à jour de la base domain
+	On part de la version 28 (existante localement)
+	Pour migrer jusqu'à la version donnée en contante DOMAIN_FINALVER
+	
+	Ce qui doit être traité ici (dans l'ordre de priorité) :
+		- Generators
+		- Domain
+		- Tables (attention au éventuelles priorités de dépendances FOREIGN KEY !)
+		- Datas (insert/update/delete)
+		- Index
+		- Constraints (check, unique)
+		- Exceptions
+
+	Pour tous les autres objets (dans l'ordre de priorité) :
+		- Stored Procedure
+		- Triggers
+		- views
+		- comments [réinitialisés à chaque MAJ]
+	Il faut préparer un fichier "proc_domain.sql" et l'appeler par l'option "-f" de ce script (par défaut, recherché dans le répertoire courant du script)
+	==> L'absence de ce fichier n'entrainenra pas une erreur fatale (seulement un warning et un code de sortie 65536)
+
+
+V1 :
+	- Initiale...
+
+
+}
+
+// {$DEFINE DEBUG}
+
+
+program maj_domain;
+
+{$I maj_bdcloud_inc.xnov}
+
+const
+
+	// Version domain cible (TODO : Mettre à jour à chaque évolution)
+	DOMAIN_FINALVER=40;
+
+	// Version mini à partir de laquelle cette procédure peut prendre en charge
+	DOMAIN_INITIALVER=28;
+
+	// Chemin par défaut du Fichier SQL contenant les procédures stockés
+	PROC_SQL_DEFPATH='proc_domain.sql';
+
+var 
+	cTable:string;
+	initChamp:boolean;
+	ctxtsql:string;
+	cDataBase:String;
+	CurVer:Integer;
+	msg: string;
+
+function GetDomainVersion():Integer;
+var
+	Caller:String;
+
+Begin
+	Caller:='GetDomainVersion';
+    Query.SQL.clear;    
+    Query.SQL.Text:='SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''VERSION'';'
+	try
+		Query.open(true);
+		Result:=StrToInt64(Query.Fields.AsString[0]);
+	Except
+		RaiseException(erCustomError,'Erreur lors de la récupération de la version en cours de la base de données, est-ce bien la base de données attendue ?');
+	Finally
+		Query.Close(etmCommit);
+	End;
+End;
+
+
+{
+	Ajout d'un nouveau GEDPARAM : ne doit-être utilisé que dans le cadre d'un ajout/update
+	Règles de gestion :
+	- Les GEDPARAM dico standards sont prioritaires (TOWNER_ID=NULL)
+	- Si un GEDPARAM owner existe déjà avec SECTION/NAME, on le renomme
+	SQLWhere permet de spécifier une chaîne de critère additionnel par rapport à ceux déjà positionné (SECTION, NAME et dico standard)
+}
+Function GedParamExists(section:string; name:string; SQLWhere:String):boolean;
+Begin
+	
+	// Recherche d'un GedParam déjà existant en Dico général
+	Result:=RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''' + section + ''' AND "NAME"=''' + name + ''' AND TOWNER_ID IS NULL AND TLIBRARY_ID IS NULL ' + iif(Trim(SQLWhere)<>'', SQLWhere, ''));
+End;
+
+
+{
+Ici on effectue des MAJ légères et diverses (non prise en charge par un proc dédiée)
+ATTENTION : est appelée en premier par le main, donc être attentif aux dépendances éventuelles
+}
+Procedure MAJ_GLOBALE();
+Var
+	Caller:String;
+Begin
+	Caller:='MAJ_GLOBALE';
+
+	if TableExists('TLOGCONNECT') then
+	Begin
+		MAJMeta(
+			'DROP TABLE TLOGCONNECT;'
+				);
+	End;
+
+	// V40
+	// MAJ des defaults values MODIF_DATE
+	if DOMAIN_FINALVER<=40 then
+		ExecuteSQL(
+			'UPDATE RDB$RELATION_FIELDS SET RDB$DEFAULT_VALUE=NULL, RDB$DEFAULT_SOURCE=NULL WHERE RDB$FIELD_NAME=''MODIF_DATE'' AND RDB$DEFAULT_VALUE IS NOT NULL;'
+		);
+
+
+	cTable:= 'TLOGSYNC';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		LogAction ('Impossible de trouver la table "' + cTable + '"',Caller,LOG_ERROR);
+		Exit;
+	End;
+
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);	
+
+	// MAJ des index TLOGSYNC (inutile de refaire par la suite)
+	if DOMAIN_FINALVER<=40 then
+	Begin
+
+		If IndexExists(MetaTdf, 'IDX_LOGSYNC_OWNER_LIB_END') then
+			MAJMeta(
+				'DROP INDEX IDX_LOGSYNC_OWNER_LIB_END;'
+				);
+
+		MAJMeta(
+			'CREATE DESC INDEX IDX_LOGSYNC_OWNER_LIB_END ON TLOGSYNC (TOWNER_ID,TLIBRARY_ID,TIME_END);'
+		);
+		
+		If IndexExists(MetaTdf, 'IDX_LOGSYNC_START') then
+			MAJMeta(
+				'DROP INDEX IDX_LOGSYNC_START;'
+				);
+
+		MAJMeta(
+			'CREATE DESC INDEX IDX_LOGSYNC_START ON TLOGSYNC (TIME_START);'
+			);
+
+		If IndexExists(MetaTdf, 'IDX_LOGSYNC_END') then
+			MAJMeta(
+				'DROP INDEX IDX_LOGSYNC_END;'
+				);
+
+		MAJMeta(
+			'CREATE DESC INDEX IDX_LOGSYNC_END ON TLOGSYNC (TIME_END);'
+			);
+	End;
+	
+End;
+	
+
+Procedure MAJ_TCONTTYPE();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TCONTTYPE';
+
+	cTable:= 'TCONTTYPE';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		LogAction ('Impossible de trouver la table "' + MetaTdf.Name + '"',Caller,LOG_ERROR);
+		Exit;
+	End;
+
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+
+	// V36 : Bug sur certaines bases domaines (Karim + Philippe) sur la séquence... On la réinit ici
+	if GetDomainVersion<=36 then
+	Begin
+		MAJMeta(
+			'ALTER SEQUENCE SEQ_CONTTYPE RESTART WITH 0;'
+		);
+		// ExecuteSQL ne fonctionne pas dans ce cas, surement un soucis de transaction (???)
+		Query.SQL.Text := 'SELECT GEN_ID(SEQ_CONTTYPE, (SELECT MAX(ID) FROM TCONTTYPE)+1) from RDB$DATABASE;';
+		Query.Open(true);
+		LogAction ('id MAX tconttype :  ' + Query.Fields.AsString[0],Caller,LOG_DEBUG);
+		Query.Close(etmCommit);
+
+// Init à 1 ???
+// 		ExecuteSQL(
+// 			'SELECT GEN_ID(SEQ_CONTTYPE, (SELECT MAX(ID) FROM TCONTTYPE)+1) from RDB$DATABASE;'
+// 		);
+	End;
+
+End;
+
+Procedure MAJ_TOWNER();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TOWNER';
+
+	cTable:= 'TOWNER';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		LogAction ('Impossible de trouver la table "' + MetaTdf.Name + '"',Caller,LOG_ERROR);
+		Exit;
+	End;
+
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+
+	// V31 : Ajout des colonnes SIZE_MB
+	if not FieldExists(MetaTdf,'SIZE_MB') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TOWNER ADD SIZE_MB Bigint DEFAULT 0, ALTER COLUMN SIZE_MB POSITION 7;'
+		);
+		ExecuteSQL(
+			'UPDATE TOWNER o ' + CRLF + 
+				'SET o.SIZE_MB = (' + CRLF +
+					'SELECT SUM(l.SIZE_MB) ' + CRLF + 
+						'FROM TLIBRARY l ' + CRLF + 
+						'WHERE o.ID=l.TOWNER_ID ' + CRLF +
+							'AND BIN_AND(l.STATE, COALESCE((SELECT CAST("VALUE" AS INTEGER) FROM TDOMPARAM WHERE SECTION=''DOMAIN'' AND "NAME"=''RECORD_DELETED''),1))=0);'
+		);
+
+	End;
+	if not FieldExists(MetaTdf,'SIZE_MB_CHARGEABLE') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TOWNER ADD SIZE_MB_CHARGEABLE Bigint DEFAULT 0, ALTER COLUMN SIZE_MB_CHARGEABLE POSITION 8;'
+		);
+		ExecuteSQL(
+			'UPDATE TOWNER o ' + CRLF + 
+				'SET o.SIZE_MB_CHARGEABLE = (' + CRLF +
+					'SELECT SUM(l.SIZE_MB) ' + CRLF +
+						'FROM TLIBRARY l ' + CRLF +
+						'WHERE o.ID=l.TOWNER_ID AND l.CHARGEABLE=1 ' + CRLF + 
+							'AND BIN_AND(l.STATE, COALESCE((SELECT CAST("VALUE" AS INTEGER) FROM TDOMPARAM WHERE SECTION=''DOMAIN'' AND "NAME"=''RECORD_DELETED''),1))=0);'
+		);
+	End;
+End;
+
+Procedure MAJ_TFBSERVER();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TFBSERVER';
+
+	cTable:= 'TFBSERVER';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		LogAction ('Impossible de trouver la table "' + MetaTdf.Name + '"',Caller,LOG_ERROR);
+		Exit;
+	End;
+
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+
+	if not FieldExists(MetaTdf,'SIZE_MB') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TFBSERVER ADD SIZE_MB Bigint DEFAULT 0;'
+		);
+		ExecuteSQL(
+			'UPDATE TFBSERVER f ' + CRLF +
+				'SET f.SIZE_MB = (SELECT SUM(l.SIZE_MB) ' + CRLF +
+					'FROM TLIBRARY l ' + CRLF + 
+					'WHERE f.ID=l.TFBSERVER_ID);'
+		);
+	End;
+End;
+
+Procedure MAJ_TLIBRARY();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TLIBRARY';
+
+	cTable:= 'TLIBRARY';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		OutputErr ('Impossible de trouver la table "' + MetaTdf.Name + '"');
+		Exit;
+	End;
+
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+
+	// V31
+	if not FieldExists(MetaTdf,'ACCESS_MODE') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TLIBRARY ADD ACCESS_MODE SMALLINT DEFAULT 0 NOT NULL CHECK (ACCESS_MODE IN (0,1,2)), ALTER COLUMN ACCESS_MODE POSITION 13;'
+		);
+		ExecuteSQL(
+			'UPDATE TLIBRARY SET ACCESS_MODE = 1;'
+		);
+	End;
+
+	// V32
+	if not FieldExists(MetaTdf,'LISTORDER') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TLIBRARY ' +
+			'ADD LISTORDER Integer;'
+		);
+	End;
+
+	if not IndexExists(MetaTdf,'IDX_LIBRARY_LISTORDER') then
+	Begin
+		MAJMeta(
+			'CREATE INDEX IDX_LIBRARY_LISTORDER ON TLIBRARY (LISTORDER);'
+		);
+	End;
+
+	// V36
+	if not FieldExists(MetaTdf,'SIZE_MB_ORG') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TLIBRARY ' +
+			'ADD SIZE_MB_ORG BIGINT DEFAULT 0,' + 
+			'ALTER COLUMN SIZE_MB_ORG POSITION 17;'
+		);
+	End;
+
+	// V40 : Passage de VARCHAR(40) à VARCHAR(255)
+	if not 	RecordExists(
+		'SELECT rf.RDB$FIELD_NAME, rf.RDB$RELATION_NAME, fs.RDB$CHARACTER_LENGTH ' +
+		'FROM RDB$RELATION_FIELDS rf INNER JOIN RDB$FIELDS fs ON rf.RDB$FIELD_SOURCE = fs.RDB$FIELD_NAME ' +
+		'WHERE rf.RDB$FIELD_NAME = ''GUID'' AND rf.RDB$RELATION_NAME = ''TLIBRARY'' AND fs.RDB$CHARACTER_LENGTH=255;') then
+		MAJMeta(
+			'ALTER TABLE TLIBRARY ' +
+			'ALTER COLUMN GUID TYPE VARCHAR(255);'
+			);
+
+	// MAJ entre 2 version 40
+	if RecordExists(
+			'SELECT rf.RDB$FIELD_NAME, rf.RDB$RELATION_NAME, fs.RDB$FIELD_TYPE ' +
+			'FROM RDB$RELATION_FIELDS rf INNER JOIN RDB$FIELDS fs ON rf.RDB$FIELD_SOURCE = fs.RDB$FIELD_NAME ' +
+			'WHERE rf.RDB$FIELD_NAME = ''VERSION'' AND rf.RDB$RELATION_NAME = ''TLIBRARY'' AND fs.RDB$FIELD_TYPE=37'
+			) then
+	Begin
+
+		MAJMeta(
+			'ALTER TABLE TLIBRARY ' +
+			'DROP VERSION;'
+			);
+	End;
+
+	if not FieldExists(MetaTdf,'VERSION')  then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TLIBRARY ' +
+			'ADD "VERSION" INTEGER,' +
+			'ALTER "VERSION" POSITION 7;'
+			);
+	End;
+
+
+End;
+
+Procedure MAJ_TGEDGROUP();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TGEDGROUP';
+
+	cTable:= 'TGEDGROUP';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		OutputErr ('Impossible de trouver la table "' + MetaTdf.Name + '"');
+		Exit;
+	End;
+
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+
+	// V32
+	if not FieldExists(MetaTdf,'TYPE') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TGEDGROUP ' + 
+			'ADD "TYPE" Smallint;'
+		);
+		ExecuteSQL(
+			'UPDATE TGEDGROUP SET "TYPE"=2;'
+		);
+	End;
+	if not FieldExists(MetaTdf,'TPROFILE_ID') then
+		MAJMeta(
+			'ALTER TABLE TGEDGROUP ' + 
+			'ADD TPROFILE_ID Integer;'
+		);
+	if not ForeignExists(MetaTdf,'FK_TGEDGROUP_PROF') then
+		MAJMeta(
+			'ALTER TABLE TGEDGROUP ' +
+			'ADD CONSTRAINT FK_TGEDGROUP_PROF FOREIGN KEY (TPROFILE_ID) REFERENCES TPROFILE(ID);' 
+		);
+	if not FieldExists(MetaTdf,'"COMMENT"') then
+		MAJMeta(
+			'ALTER TABLE TGEDGROUP ' + 
+			'ADD "COMMENT" Varchar(8164);'
+		);
+	if not FieldExists(MetaTdf,'CREATE_DATE') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TGEDGROUP ' + 
+			'ADD CREATE_DATE TimeStamp NOT NULL;'
+		);
+		ExecuteSQL(
+			'UPDATE TGEDGROUP ' + 
+			'SET CREATE_DATE=CURRENT_TIMESTAMP;'
+		);
+	End;
+	if not FieldExists(MetaTdf,'MODIF_DATE') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TGEDGROUP ' + 
+			'ADD MODIF_DATE TimeStamp NOT NULL;'
+		);
+		ExecuteSQL(
+			'UPDATE TGEDGROUP ' + 
+			'SET MODIF_DATE=CURRENT_TIMESTAMP;'
+		);
+	End;
+End;
+
+Procedure MAJ_TGEDUSER();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TGEDUSER';
+
+	cTable:= 'TGEDUSER';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		OutputErr ('Impossible de trouver la table "' + MetaTdf.Name + '"');
+		Exit;
+	End;
+
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+
+	// V32
+	if not FieldExists(MetaTdf,'TGEDGROUP_ID') then
+		MAJMeta(
+			'ALTER TABLE TGEDUSER ' +
+			'ADD TGEDGROUP_ID Integer;' 
+		);
+	if not ForeignExists(MetaTdf,'FK_TGEDUSER_GROUP') then
+		MAJMeta(
+			'ALTER TABLE TGEDUSER ' +
+			'ADD CONSTRAINT FK_TGEDUSER_GROUP FOREIGN KEY (TGEDGROUP_ID) REFERENCES TGEDGROUP(ID);' 
+		);
+
+	// V34
+	if not IndexExists(MetaTdf,'IDX_TGEDUSER_STATE') then
+		MAJMeta(
+			'CREATE INDEX IDX_TGEDUSER_STATE ON TGEDUSER (STATE);' 
+		);
+
+End;
+
+
+Procedure MAJ_TGEDGROUPLIB();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TGEDGROUPLIB';
+
+	cTable:= 'TGEDGROUPLIB';
+	// V32
+	if not TableExists(cTable) then
+	Begin
+		LogAction ('Création de la table "' + cTable + '"',Caller,LOG_INFO);
+		MAJMeta(
+			'CREATE TABLE TGEDGROUPLIB ( ' + 
+			'TGEDGROUP_ID Integer NOT NULL, ' + 
+			'TLIBRARY_ID Integer NOT NULL, ' +
+			'TPROFILE_ID Integer, ' + 
+			'CONSTRAINT PK_TGEDGROUPLIB PRIMARY KEY (TGEDGROUP_ID,TLIBRARY_ID), ' +
+			'CONSTRAINT FK_TGEDGROUPLIB_GROUP ' + 
+			'	FOREIGN KEY (TGEDGROUP_ID) REFERENCES TGEDGROUP (ID), ' + 
+			'CONSTRAINT FK_TGEDGROUPLIB_LIB ' +
+			'	FOREIGN KEY (TLIBRARY_ID) REFERENCES TLIBRARY (ID), ' +
+			'CONSTRAINT FK_TGEDGROUPLIB_PROF ' + 
+			'	FOREIGN KEY (TPROFILE_ID) REFERENCES TPROFILE (ID) ' + 
+			');'
+		);
+	End;
+
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		OutputErr ('Impossible de trouver la table "' + MetaTdf.Name + '"');
+		Exit;
+	End;
+
+	//LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+
+
+End;
+
+Procedure MAJ_TCONTACT();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TCONTACT';
+
+	cTable:= 'TCONTACT';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		OutputErr ('Impossible de trouver la table "' + MetaTdf.Name + '"');
+		Exit;
+	End;
+
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+
+	// V32
+	if not FieldExists(MetaTdf,'ORGANIZATION') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TCONTACT ' +
+			'ADD ORGANIZATION Varchar(100), ' + 
+			'ALTER COLUMN ORGANIZATION POSITION 14;'
+		);
+	End;
+	if not FieldExists(MetaTdf,'SERVICE') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TCONTACT ' +
+			'ADD SERVICE Varchar(100), ' + 
+			'ALTER COLUMN SERVICE POSITION 14;'
+		);
+	End;
+	if not FieldExists(MetaTdf,'IDENTIFIER') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TCONTACT ' +
+			'ADD IDENTIFIER Varchar(100), ' + 
+			'ALTER COLUMN IDENTIFIER POSITION 14;'
+		);
+	End;
+
+	if not FieldExists(MetaTdf,'CELLTEL') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TCONTACT ' +
+			'ADD CELLTEL Varchar(20), ' +
+			'ALTER COLUMN CELLTEL POSITION 14;'
+		);
+	End;
+
+	if FieldExists(MetaTdf,'ZIP_CODE') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TCONTACT ' +
+			'ALTER COLUMN ZIP_CODE TO POSTCODE;'
+		);
+	End;
+
+	// MAJ V32.1 => V32.2...
+	if FieldExists(MetaTdf,'CELLPHONE') then
+	Begin
+		ExecuteSQL(
+			'UPDATE TCONTACT SET CELLTEL=CELLPHONE;'
+		);
+		MAJMeta(
+			'ALTER TABLE TCONTACT DROP CELLPHONE;'
+		);
+	End;
+	if FieldExists(MetaTdf,'DEPARTMENT') then
+	Begin
+		ExecuteSQL(
+			'UPDATE TCONTACT SET SERVICE=DEPARTMENT;'
+		);
+		MAJMeta(
+			'ALTER TABLE TCONTACT DROP DEPARTMENT;'
+		);
+	End;
+
+	// V34
+	if not IndexExists(MetaTdf,'IDX_CONTACT_FIRSTNAME') then
+	Begin
+		MAJMeta(
+			'CREATE INDEX IDX_CONTACT_FIRSTNAME ON TCONTACT(FIRSTNAME);'
+		);
+	End;
+	// MAJ NULL OK TCONTACT.NAME
+	if RecordExists('SELECT RDB$FIELD_NAME FROM RDB$RELATION_FIELDS WHERE RDB$FIELD_NAME = ''NAME'' AND RDB$RELATION_NAME = ''TCONTACT'' AND RDB$NULL_FLAG IS NOT NULL;') then
+		ExecuteSQL(
+			'UPDATE RDB$RELATION_FIELDS SET RDB$NULL_FLAG = NULL    WHERE RDB$FIELD_NAME = ''NAME'' AND RDB$RELATION_NAME = ''TCONTACT'';'
+		);
+
+End;
+
+
+// MAJ des tables liées aux GEDPARAM en général
+Procedure MAJ_TGEDPARAMS();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TGEDPARAMS';
+
+	
+	// On s'oocupe d'abord de TGEDPARAM
+	cTable:= 'TGEDPARAM';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		OutputErr ('Impossible de trouver la table "' + MetaTdf.Name + '"');
+		Exit;
+	End;
+
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+
+	// V36 : Modification de contrainte d'unicité avec prise en compte de TLIBRARY_ID en plus...
+	if GetDomainVersion<=36 then
+		MAJMeta(
+			'ALTER TABLE TGEDPARAM ' + 
+				'DROP CONSTRAINT UNI_GEDPARAMPROF, ' +
+				'ADD CONSTRAINT UNI_GEDPARAMPROF UNIQUE (SECTION,NAME,TOWNER_ID,TLIBRARY_ID) ' +
+				'USING INDEX IDX_UNI_GEDPARAMPROF;'
+		);
+
+	// V40 : Ajout de colonne MODIF_DATE
+	if not FieldExists(MetaTdf,'MODIF_DATE') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TGEDPARAM ' +
+			'ADD MODIF_DATE TIMESTAMP NOT NULL, ' +
+			'ALTER MODIF_DATE POSITION 10;'
+		);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TGEDPARAM.MODIF_DATE IS ''Date (automatique) de dernière mise à jour d''''un Paramètre'';'
+		);
+
+		// MAJ Datas
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET MODIF_DATE=CURRENT_TIMESTAMP;'
+		);
+	End;
+
+	// V40 : Table de transition entre 2 versions pour ne pas "perdre" des PARAM
+	// TODO : À supprimer en V41
+	if (DOMAIN_FINALVER=40) and (not TableExists('Z_PARAM_NOT_EXISTS_IN_TGEDPARAM')) then
+	Begin
+		MAJMeta(
+			'CREATE TABLE Z_PARAM_NOT_EXISTS_IN_TGEDPARAM (' + 
+				'SRCTBL VARCHAR(31),' +
+				'"SECTION" VARCHAR(40),' + 
+				'"NAME" VARCHAR(80),' +
+				'"VALUE" VARCHAR(255),' +
+				'"VALUEBLB" BLOB SUB_TYPE 0,' +
+				'"MODIF_DATE" Timestamp,' +
+				'TOWNER_ID INTEGER,' +
+				'TPROFILE_ID INTEGER,' +
+				'TGEDUSER_ID INTEGER,' +
+				'TLIBRARY_ID INTEGER' +
+			');'
+			);
+	End;
+
+	
+	// Ensuite TGEDPARAMOWNER
+	cTable:= 'TGEDPARAMOWNER';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	// V40 : Factorisation GEDPARAM
+	if not FieldExists(MetaTdf,'TGEDPARAM_ID') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMOWNER ' + 
+			'ADD TGEDPARAM_ID INTEGER NOT NULL, ' + 
+			'ALTER COLUMN TGEDPARAM_ID POSITION 1;'
+		);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TGEDPARAMOWNER.TGEDPARAM_ID IS ''Code identifiant Paramètre GED'';'
+			);
+		
+		// MAJ Datas
+		MAJMeta(
+			'ALTER TRIGGER TGEDPARAMOWNER_STAMP INACTIVE;'
+		);
+		ExecuteSQL(
+			'UPDATE TGEDPARAMOWNER SET TGEDPARAM_ID=COALESCE((SELECT FIRST 1 ID FROM TGEDPARAM WHERE TGEDPARAM.SECTION=TGEDPARAMOWNER.SECTION AND TGEDPARAM.NAME=TGEDPARAMOWNER.NAME ORDER BY TGEDPARAM.TOWNER_ID),-1);'
+		);
+		
+		// Stockage et Nettoyage des orphelins...
+		if TableExists('Z_PARAM_NOT_EXISTS_IN_TGEDPARAM') then
+			ExecuteSQL(
+				'INSERT INTO Z_PARAM_NOT_EXISTS_IN_TGEDPARAM ("SRCTBL", "SECTION", "NAME", "VALUE" ,"VALUEBLB" , "MODIF_DATE" ,"TOWNER_ID") ' +
+				'SELECT ''TGEDPARAMOWNER'', "SECTION", "NAME", "VALUE", "VALUEBLB", "MODIF_DATE", "TOWNER_ID" FROM TGEDPARAMOWNER WHERE TGEDPARAM_ID=-1;'
+				);
+		
+		ExecuteSQL(
+			'DELETE FROM TGEDPARAMOWNER WHERE TGEDPARAM_ID=-1;'
+		);
+
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMOWNER DROP CONSTRAINT TGEDPARAMOWNER_PK;'
+		);
+
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMOWNER ' +
+			'DROP "SECTION",' +
+			'DROP "NAME",' +
+			'DROP "TYPE",'+ 
+			'DROP "COMMENT",' +
+			'ADD CONSTRAINT TGEDPARAMOWNER_PK PRIMARY KEY (TOWNER_ID,TGEDPARAM_ID);'
+		);
+
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMOWNER ADD CONSTRAINT FK_TGEDPARAMOWNER_GEDPARAM FOREIGN KEY (TGEDPARAM_ID) REFERENCES TGEDPARAM (ID) ON DELETE CASCADE;'
+		);
+
+		MAJMeta(
+			'ALTER TRIGGER TGEDPARAMOWNER_STAMP ACTIVE;'
+			);
+	End;
+
+		
+	// Ensuite TGEDPARAMPROF
+	cTable:= 'TGEDPARAMPROF';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	// V40 : Factorisation GEDPARAM
+	if not FieldExists(MetaTdf,'TGEDPARAM_ID') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMPROF ' + 
+			'ADD TGEDPARAM_ID INTEGER NOT NULL, ' +
+			'ALTER COLUMN TGEDPARAM_ID POSITION 1;'
+					);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TGEDPARAMPROF.TGEDPARAM_ID IS ''Code identifiant Paramètre GED'';'
+					);
+
+	// MAJ Datas
+		MAJMeta(
+			'ALTER TRIGGER TGEDPARAMPROF_STAMP INACTIVE;'
+					);
+		ExecuteSQL(
+			'UPDATE TGEDPARAMPROF SET TGEDPARAM_ID=COALESCE((SELECT FIRST 1 ID FROM TGEDPARAM WHERE TGEDPARAM.SECTION=TGEDPARAMPROF.SECTION AND TGEDPARAM.NAME=TGEDPARAMPROF.NAME ORDER BY TGEDPARAM.TOWNER_ID),-1);'
+					);
+
+	// Stockage et Nettoyage des orphelins...
+		if TableExists('Z_PARAM_NOT_EXISTS_IN_TGEDPARAM') then
+			ExecuteSQL(
+				'INSERT INTO Z_PARAM_NOT_EXISTS_IN_TGEDPARAM ("SRCTBL", "SECTION", "NAME", "VALUE" ,"VALUEBLB" , "MODIF_DATE" ,"TPROFILE_ID") ' + 
+				'SELECT ''TGEDPARAMPROF'', "SECTION", "NAME", "VALUE", "VALUEBLB", "MODIF_DATE", "TPROFILE_ID" FROM TGEDPARAMPROF WHERE TGEDPARAM_ID=-1;'
+					);
+		ExecuteSQL(
+			'DELETE FROM TGEDPARAMPROF WHERE TGEDPARAM_ID=-1;'
+					);
+
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMPROF DROP CONSTRAINT TGEDPARAMPROF_PK;'
+					);
+
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMPROF ' +
+			'DROP "SECTION", ' +
+			'DROP "NAME", ' +
+			'DROP "TYPE", ' +
+			'DROP "COMMENT",  ' +
+			'ADD CONSTRAINT TGEDPARAMPROF_PK PRIMARY KEY (TPROFILE_ID,TGEDPARAM_ID);'
+					);
+
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMPROF ADD CONSTRAINT FK_TGEDPARAMPROF_GEDPARAM FOREIGN KEY (TGEDPARAM_ID) REFERENCES TGEDPARAM (ID) ON DELETE CASCADE;'
+					);
+
+		MAJMeta(
+			'ALTER TRIGGER TGEDPARAMPROF_STAMP ACTIVE;'
+			);
+	End;
+
+		
+	// Ensuite TGEDPARAMUSER
+	cTable:= 'TGEDPARAMUSER';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	// V40 : Factorisation GEDPARAM
+	if not FieldExists(MetaTdf,'TGEDPARAM_ID') then
+	Begin
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMUSER ' +
+			'ADD TGEDPARAM_ID INTEGER NOT NULL, '  +
+			'ALTER COLUMN TGEDPARAM_ID POSITION 1;'
+			);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TGEDPARAMUSER.TGEDPARAM_ID IS ''Code identifiant Paramètre GED'';'
+			);
+
+		// MAJ Datas
+		MAJMeta(
+			'ALTER TRIGGER TGEDPARAMUSER_STAMP INACTIVE;'
+					);
+		ExecuteSQL(
+			'UPDATE TGEDPARAMUSER SET TGEDPARAM_ID=COALESCE((SELECT FIRST 1 ID FROM TGEDPARAM WHERE TGEDPARAM.SECTION=TGEDPARAMUSER.SECTION AND TGEDPARAM.NAME=TGEDPARAMUSER.NAME ORDER BY TGEDPARAM.TOWNER_ID),-1);'
+			);
+
+	// Stockage et Nettoyage des orphelins...
+		if TableExists('Z_PARAM_NOT_EXISTS_IN_TGEDPARAM') then
+			ExecuteSQL(
+				'INSERT INTO Z_PARAM_NOT_EXISTS_IN_TGEDPARAM ("SRCTBL", "SECTION", "NAME", "VALUE" ,"VALUEBLB" , "MODIF_DATE" ,"TGEDUSER_ID","TLIBRARY_ID") ' + 
+				'SELECT ''TGEDPARAMUSER'', "SECTION", "NAME", "VALUE", "VALUEBLB", "MODIF_DATE", "TGEDUSER_ID","TLIBRARY_ID" FROM TGEDPARAMUSER WHERE TGEDPARAM_ID=-1;'
+					);
+		ExecuteSQL(
+			'DELETE FROM TGEDPARAMUSER WHERE TGEDPARAM_ID=-1;'
+			);
+
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMUSER DROP CONSTRAINT TGEDPARAMUSER_UNI;'
+			);
+
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMUSER ' +
+			'DROP "SECTION", ' +
+			'DROP "NAME", ' +
+			'DROP "TYPE", ' +
+			'DROP "COMMENT",  ' +
+			'ADD CONSTRAINT TGEDPARAMUSER_UNI UNIQUE (TGEDUSER_ID,TLIBRARY_ID,TGEDPARAM_ID);'
+			);
+
+		MAJMeta(
+			'ALTER TABLE TGEDPARAMUSER ADD CONSTRAINT FK_TGEDPARAMUSER_GEDPARAM FOREIGN KEY (TGEDPARAM_ID) REFERENCES TGEDPARAM (ID) ON DELETE CASCADE;'
+			);
+
+		MAJMeta(
+			'ALTER TRIGGER TGEDPARAMUSER_STAMP ACTIVE;'
+			);
+	End;
+			
+End;
+
+
+Procedure MAJ_TSTORAGE();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_TSTORAGE';
+
+	cTable:= 'TSTORAGE';
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	// V40 : création
+	if MetaTdf=nil then
+	Begin
+		LogAction ('Création de la table "' + cTable + '"',Caller,LOG_INFO);
+		MAJMeta(
+				'CREATE TABLE TSTORAGE ( ' + 
+				'TOWNER_ID INTEGER NOT NULL, ' + 
+				'SECTION Varchar(40) NOT NULL COLLATE UNICODE_CI, ' +
+				'"NAME" Varchar(80) NOT NULL COLLATE UNICODE_CI, ' + 
+				'"VALUE" Varchar(8000) NOT NULL, ' +
+				'TGEDUSER_ID INTEGER, ' +
+				'TLIBRARY_ID Integer, ' +
+				'MODIF_DATE Timestamp NOT NULL, ' +
+				'CONSTRAINT FK_TSTORAGE_TOWNER FOREIGN KEY (TOWNER_ID) REFERENCES TOWNER (ID), ' +
+				'CONSTRAINT FK_TSTORAGE_TGEDUSER FOREIGN KEY (TGEDUSER_ID) REFERENCES TGEDUSER (ID), ' +
+				'CONSTRAINT FK_TSTORAGE_TLIBRARY FOREIGN KEY (TLIBRARY_ID) REFERENCES TLIBRARY (ID), ' +
+				'CONSTRAINT TSTORAGE_UNI UNIQUE (TOWNER_ID,SECTION, NAME, TGEDUSER_ID, TLIBRARY_ID) ' +
+				');'
+				);
+		ExecuteSQL(
+			'COMMENT ON TABLE TSTORAGE IS ''Table de paramètres "libres" utilisables par les clients sans contrôle du serveur d''''application'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TSTORAGE.TOWNER_ID IS ''Code identifiant du propriétaire'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TSTORAGE.SECTION IS ''Section (classement) du Paramètre'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TSTORAGE."NAME" IS ''Nom du Paramètre (unique dans une Section)'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TSTORAGE."VALUE" IS ''Valeur du Paramètre'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TSTORAGE.TGEDUSER_ID IS ''Code identifiant de l''''utilisateur GED'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON COLUMN TSTORAGE.TLIBRARY_ID IS ''Code identifiant de la Bibliothèque'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON    COLUMN    TSTORAGE.MODIF_DATE IS ''Date (automatique) de dernière mise à jour du Paramètre'';'
+			);
+	End;
+
+	MetaTdf:=MetaDB.FindTableName(cTable);
+
+	if MetaTdf=nil then // exit;  ==> On arrête tout sans rien faire d'autre ???
+	Begin
+		OutputErr ('Impossible de trouver la table "' + MetaTdf.Name + '"');
+		Exit;
+	End;
+	LogAction ('Mise à jour de la table "' + MetaTdf.Name + '"',Caller,LOG_INFO);
+End;
+		
+
+
+// MAJ Des DOMPARAMS et GEDPARAMS
+{
+Attention depuis la V40, TGEDPARAM.MODIF_DATE est présent
+Les triggers étant désactivés AVANT le lancement de cette procedure
+Il FAUT passer les DATES de MODIF aux INSERT
+}
+
+Procedure MAJ_PARAMS();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_PARAMS';
+
+	LogAction ('Mise à jour des tables de paramètres (TDOMPARAM et TGEDPARM*)',Caller,LOG_INFO);
+
+
+	// Ajout de nouveaux paramètres domaine v29
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''EMAIL_REINIT_GEDUSER_PASSWORD''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") ' + 
+			'VALUES (''DOMAIN'',''EMAIL_REINIT_GEDUSER_PASSWORD'',''1'',''[%%domain_name%%] - Réinitialisation de votre mode de passe'',''Bonjour %%cont_prefix%% %%cont_firstname%% %%cont_name%%,' + 
+			CRLF +
+			CRLF + 
+			CRLF + 'Une demande de réinitialisation de mot de passe concernant votre compte "%%geduser_login%%" vient d''''être effectuée...' +
+			CRLF + '- Votre nouveau mot de passe est : %%geduser_password%%' +
+			CRLF +
+			CRLF + 'Si vous n''''êtes pas à l''''origine de cette demande, connectez-vous immédiatement sur le site %%domain_url%% et modifiez à nouveau votre mot de passe.' + 
+			CRLF + 'Vous devriez aussi avertir l''''administrateur %%admin_email%%.' + 
+			CRLF +
+			CRLF + '%%signature%%'',''Corps du mail envoyé suite à une demande de réinitialisation de mot de passe d''''un utilisateur GED'',1) MATCHING("SECTION","NAME");'
+		);
+
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''WEB_URL''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''DOMAIN'',''WEB_URL'',''1'',NULL,NULL,''URL d''''un site WEB associé au serveur NAS courant (accès WEB au domaine), utilisé dans les paramètres d''''email notamment'',1) MATCHING("SECTION","NAME");'
+		);
+
+	// Ajout de nouveaux paramètres GED v30
+	if GedParamExists('DROITS','TELECHARGER', '') then
+	//if not RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''DROITS'' AND "NAME"=''TELECHARGER''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''TELECHARGER'', ''2'', 0, ''1'', NULL, ''Permet d''''inhiber le téléchargement des documents originaux bureautique et messages -> l''''utilisateur ne voit que l''''aperçu vignette et l''''aperçu pdf du document'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+
+	// Ajout de nouveaux paramètres GED v31
+	if not GedParamExists('CONNEXION','COLONNES_MASQUEES', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''COLONNES_MASQUEES'', ''3'', 0, ''0'', NULL, ''Nombre de colonnes masquées en partant de la première'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('DROITS','DEPOT_ACTIF_PAR_DEFAUT', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''DEPOT_ACTIF_PAR_DEFAUT'', ''2'', 0, ''1'', NULL, ''Indique si, par défaut la fonction Panière est active pour un dossier qui n''''a pas la méta-donnée "cloud/Dépose de document" renseignée'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	// Réaffectation de TGEDPARAM RECHERCHER de section INTERFACE vers section DROITS...
+	if GedParamExists('INTERFACE','RECHERCHER', '') Then
+	Begin
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION=''DROITS'' WHERE "SECTION"=''INTERFACE'' AND "NAME"=''RECHERCHER'';'
+			);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET SECTION=''DROITS'' WHERE SECTION=''INTERFACE'' AND "NAME"=''RECHERCHER'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET SECTION=''DROITS'' WHERE SECTION=''INTERFACE'' AND "NAME"=''RECHERCHER'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET SECTION=''DROITS'' WHERE SECTION=''INTERFACE'' AND "NAME"=''RECHERCHER'';'
+// 		);
+	End
+	Else
+	Begin
+		// Si non déjà existant, on ajoute...
+		if not GedParamExists('DROITS','RECHERCHER', '') Then
+			// Ajout ou MAJ
+			ExecuteSQL(
+				'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''RECHERCHER'', ''2'', 0, ''1'', NULL, ''Disposer de la fonction de Recherche'',  NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+
+	// Ajout de nouveaux paramètres domaine v32
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''RESTORE''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM (SECTION, NAME, "TYPE", "VALUE", VALUEBLB, "COMMENT", PROTECTION) VALUES (''DOMAIN'',''RESTORE'', ''3'', ''256'', NULL, ''État d''''une bibliothèque en mode restauration (interdit les backups/synchros/réintégration de document en panières, etc.)'', ''0'') MATCHING ("SECTION", "NAME");'
+		);
+
+	// Ajout/modification de nouveaux paramètres GED v32
+	// Inconditionnel...
+	ExecuteSQL(
+		'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''AJOUTER'', ''2'', 0, ''0'', NULL, ''ajouter des items de classement, ou des dossiers'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+	);
+	if not GedParamExists('DROITS','AJOUTER_DOCUMENT', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''AJOUTER_DOCUMENT'', ''2'', 0, ''0'', NULL, ''Permet d''''ajouter des documents si la bibliothèque est en accès complet (full saas)'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+
+	// On annule ces paramètres en V36 (plus d'ajout)
+{
+	if not RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME"=''N1'';') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''N1'', ''1'', 0, NULL, NULL, ''filtre where sur la 1ère colonne'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME"=''N2'';') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''N2'', ''1'', 0, NULL, NULL, ''filtre where sur la 2ème colonne'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME"=''N3'';') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''N3'', ''1'', 0, NULL, NULL, ''filtre where sur la 3ème colonne'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME"=''N4'';') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''N4'', ''1'', 0, NULL, NULL, ''filtre where sur la 4ème colonne'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME"=''N5'';') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''N5'', ''1'', 0, NULL, NULL, ''filtre where sur la 5ème colonne'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME"=''N6'';') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''N6'', ''1'', 0, NULL, NULL, ''filtre where sur les chemises'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME"=''N7'';') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''N7'', ''1'', 0, NULL, NULL, ''filtre where sur les documents'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+}
+	if not GedParamExists('DROITS','PARTAGE', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''PARTAGE'', ''2'', 0, ''0'', NULL, ''Permet de créer des partages (liens d''''accès WEB) sur l''''arborescence'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	// MAJ des DELIM (on met à jour DELIM_MACRO aussi ici)
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "VALUE" LIKE ''%\%\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%\%%'' ESCAPE ''\'';') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%%'',''%''), VALUEBLB=REPLACE(VALUEBLB,''%%'',''%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMOWNER WHERE "VALUE" LIKE ''%\%\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMOWNER SET "VALUE"=REPLACE("VALUE",''%%'',''%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMPROF WHERE "VALUE" LIKE ''%\%\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMPROF SET "VALUE"=REPLACE("VALUE",''%%'',''%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMUSER WHERE "VALUE" LIKE ''%\%\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMUSER SET "VALUE"=REPLACE("VALUE",''%%'',''%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMOWNER WHERE "VALUE" LIKE ''%\%geduser_login\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMOWNER SET "VALUE"=REPLACE("VALUE",''%geduser_login%'',''%login%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMPROF WHERE "VALUE" LIKE ''%\%geduser_login\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMPROF SET "VALUE"=REPLACE("VALUE",''%geduser_login%'',''%login%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMUSER WHERE "VALUE" LIKE ''%\%geduser_login\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMUSER SET "VALUE"=REPLACE("VALUE",''%geduser_login%'',''%login%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMOWNER WHERE "VALUE" LIKE ''%\%contact_name\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMOWNER SET "VALUE"=REPLACE("VALUE",''%contact_name%'',''%name%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMPROF WHERE "VALUE" LIKE ''%\%contact_name\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMPROF SET "VALUE"=REPLACE("VALUE",''%contact_name%'',''%name%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMUSER WHERE "VALUE" LIKE ''%\%contact_name\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMUSER SET "VALUE"=REPLACE("VALUE",''%contact_name%'',''%name%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMOWNER WHERE "VALUE" LIKE ''%\%contact_firstname\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMOWNER SET "VALUE"=REPLACE("VALUE",''%contact_firstname%'',''%firstname%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMPROF WHERE "VALUE" LIKE ''%\%contact_firstname\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMPROF SET "VALUE"=REPLACE("VALUE",''%contact_firstname%'',''%firstname%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TGEDPARAMUSER WHERE "VALUE" LIKE ''%\%contact_firstname\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAMUSER SET "VALUE"=REPLACE("VALUE",''%contact_firstname%'',''%firstname%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "VALUE" LIKE ''%\%geduser_login\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%geduser_login\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%geduser_login%'',''%login%''), VALUEBLB=REPLACE(VALUEBLB,''%geduser_login%'',''%login%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE ("VALUE" LIKE ''%\%cont_prefix\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%cont_prefix\%%'' ESCAPE ''\'') AND SECTION=''DOMAIN'' AND "NAME"=''EMAIL_REINIT_GEDUSER_PASSWORD''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%cont_prefix%'',''%prefix%''), VALUEBLB=REPLACE(VALUEBLB,''%cont_prefix%'',''%prefix%'') WHERE SECTION=''DOMAIN'' AND "NAME"=''EMAIL_REINIT_GEDUSER_PASSWORD'';'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE ("VALUE" LIKE ''%\%cont_firstname\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%cont_firstname\%%'' ESCAPE ''\'') AND SECTION=''DOMAIN'' AND "NAME"=''EMAIL_REINIT_GEDUSER_PASSWORD''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%cont_firstname%'',''%firstname%''), VALUEBLB=REPLACE(VALUEBLB,''%cont_firstname%'',''%firstname%'') WHERE SECTION=''DOMAIN'' AND "NAME"=''EMAIL_REINIT_GEDUSER_PASSWORD'';'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE ("VALUE" LIKE ''%\%cont_name\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%cont_name\%%'' ESCAPE ''\'') AND SECTION=''DOMAIN'' AND "NAME"=''EMAIL_REINIT_GEDUSER_PASSWORD''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%cont_name%'',''%name%''), VALUEBLB=REPLACE(VALUEBLB,''%cont_name%'',''%name%'') WHERE SECTION=''DOMAIN'' AND "NAME"=''EMAIL_REINIT_GEDUSER_PASSWORD'';'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "VALUE" LIKE ''%\%cont_prefix\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%cont_prefix\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%cont_prefix%'',''%contact_prefix%''), VALUEBLB=REPLACE(VALUEBLB,''%cont_prefix%'',''%contact_prefix%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "VALUE" LIKE ''%\%cont_firstname\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%cont_firstname\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%cont_firstname%'',''%contact_firstname%''), VALUEBLB=REPLACE(VALUEBLB,''%cont_firstname%'',''%contact_firstname%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "VALUE" LIKE ''%\%cont_name\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%cont_name\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%cont_name%'',''%contact_name%''), VALUEBLB=REPLACE(VALUEBLB,''%cont_name%'',''%contact_name%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "VALUE" LIKE ''%\%geduser_password\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%geduser_password\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%geduser_password%'',''%password%''), VALUEBLB=REPLACE(VALUEBLB,''%geduser_password%'',''%password%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "VALUE" LIKE ''%\%lib_titre\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%lib_titre\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%lib_titre%'',''%lib_title%''), VALUEBLB=REPLACE(VALUEBLB,''%lib_titre%'',''%lib_title%'');'
+		);
+	if RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "VALUE" LIKE ''%\%sync_erreur\%%'' ESCAPE ''\'' OR VALUEBLB LIKE ''%\%sync_erreur\%%'' ESCAPE ''\''') then
+		ExecuteSQL(
+			'UPDATE TDOMPARAM SET "VALUE"=REPLACE("VALUE",''%sync_erreur%'',''%sync_error%''), VALUEBLB=REPLACE(VALUEBLB,''%sync_erreur%'',''%sync_error%'');'
+		);
+
+	// Ajout/modification de nouveaux paramètres GED v33
+	if not GedParamExists('LICENCE','FULLTEXT', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''LICENCE'', ''FULLTEXT'', ''2'', 1, ''0'', NULL, ''Compte pouvant utiliser le FULLTEXT (site, synchro, etc)'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('DROITS','INFOS_UTILISATEUR', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''INFOS_UTILISATEUR'', ''2'', 0, ''0'', NULL, ''Les informations utilisateur peuvent être affichées/modifiées'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		)
+	else // V36 : modification de valeur par défaut de 1 vers 0
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET "DEFAULTVALUE"=''0'' WHERE "SECTION"=''DROITS'' AND "NAME"=''INFOS_UTILISATEUR'';'
+		);
+		
+
+	// Changement de nom entre 2 version 33 :-(...
+	if GedParamExists('CONNEXION','BLOQUERPARTAGE', '') Then
+	Begin
+		// MAJ Existant (+ modif section V36)
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''BLOQUER_PARTAGE'', SECTION=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''BLOQUERPARTAGE'';'
+			);
+		// V40 FK cascade
+// 		// MAJ Existant
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''BLOQUER_PARTAGE'', SECTION=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''BLOQUERPARTAGE'';'
+// 		);
+// 		// MAJ Existant
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''BLOQUER_PARTAGE'', SECTION=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''BLOQUERPARTAGE'';'
+// 		);
+// 		// MAJ Existant
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''BLOQUER_PARTAGE'', SECTION=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''BLOQUERPARTAGE'';'
+// 		);
+	End
+	Else
+	Begin
+		// V36 : modification de section
+		if GedParamExists('CONNEXION','BLOQUER_PARTAGE', '') Then
+		Begin
+			ExecuteSQL(
+				'UPDATE TGEDPARAM SET "SECTION"=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''BLOQUER_PARTAGE'';'
+			);
+		// V40 FK cascade
+// 			ExecuteSQL(
+// 				'UPDATE TGEDPARAMOWNER SET "SECTION"=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''BLOQUER_PARTAGE'';'
+// 			);
+// 			ExecuteSQL(
+// 				'UPDATE TGEDPARAMPROF SET "SECTION"=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''BLOQUER_PARTAGE'';'
+// 			);
+// 			ExecuteSQL(
+// 				'UPDATE TGEDPARAMUSER SET "SECTION"=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''BLOQUER_PARTAGE'';'
+// 			);
+		End
+		Else
+		Begin
+			// Ajout si non déjà existant..
+			if Not GedParamExists('DROITS','BLOQUER_PARTAGE', '') Then
+				ExecuteSQL(
+					'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''BLOQUER_PARTAGE'', ''2'', 0, ''0'', NULL, ''Empêche les liens de partage déjà créés de fonctionner (au niveau où ce param est défini : owner, geduser, bib, ...)'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+				);
+		End;
+	End;
+	// Changement de nom entre 2 version 33 :-(...
+	If GedParamExists('DROITS','GROUPEDEPARTAGE', '') Then
+	Begin
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''GROUPE_PARTAGE'' WHERE "SECTION"=''DROITS'' AND "NAME"=''GROUPEDEPARTAGE'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''GROUPE_PARTAGE'' WHERE "SECTION"=''DROITS'' AND "NAME"=''GROUPEDEPARTAGE'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''GROUPE_PARTAGE'' WHERE "SECTION"=''DROITS'' AND "NAME"=''GROUPEDEPARTAGE'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''GROUPE_PARTAGE'' WHERE "SECTION"=''DROITS'' AND "NAME"=''GROUPEDEPARTAGE'';'
+// 		);
+	End
+	Else
+	Begin
+	if not GedParamExists('DROITS','GROUPE_PARTAGE', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''GROUPE_PARTAGE'', ''9'', 0, NULL, NULL, ''Groupe d''''utilisateurs utilisables en cible de partage d''''arborescence (partage impossibble si non existant ou vide)'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	End;
+	// Changement de nom entre 2 version 33 :-(...
+	If GedParamExists('INTERFACE','MOT_PASSE_OUBLIE', '') Then
+	Begin
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''MOT_DE_PASSE_OUBLIE'' WHERE "SECTION"=''INTERFACE'' AND "NAME"=''MOT_PASSE_OUBLIE'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''MOT_DE_PASSE_OUBLIE'' WHERE "SECTION"=''INTERFACE'' AND "NAME"=''MOT_PASSE_OUBLIE'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''MOT_DE_PASSE_OUBLIE'' WHERE "SECTION"=''INTERFACE'' AND "NAME"=''MOT_PASSE_OUBLIE'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''MOT_DE_PASSE_OUBLIE'' WHERE "SECTION"=''INTERFACE'' AND "NAME"=''MOT_PASSE_OUBLIE'';'
+// 		);
+	End
+	Else
+	Begin
+		if not GedParamExists('INTERFACE','MOT_DE_PASSE_OUBLIE', '') Then
+			// V38 class=8
+			ExecuteSQL(
+				'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''INTERFACE'', ''MOT_DE_PASSE_OUBLIE'', ''2'', 8, ''1'', NULL, ''Présence du lien pour gérer l''''oubli de mot de passe sur la mire d''''accueil WEB'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+	// Renommage TGEDPARAM V33...
+	if GedParamExists('CONNEXION','LOGIN_BIB', '') Then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''UTILISATEUR_BIB'' WHERE SECTION=''CONNEXION'' AND NAME=''LOGIN_BIB'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''UTILISATEUR_BIB'' WHERE SECTION=''CONNEXION'' AND NAME=''LOGIN_BIB'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''UTILISATEUR_BIB'' WHERE SECTION=''CONNEXION'' AND NAME=''LOGIN_BIB'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''UTILISATEUR_BIB'' WHERE SECTION=''CONNEXION'' AND NAME=''LOGIN_BIB'';'
+// 		);
+	End;
+	if GedParamExists('CONNEXION','FORCEPASSWORD', '') Then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement... (+ changement section V36)
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''FORCER_MOT_DE_PASSE'', "SECTION"=''DROITS'' WHERE SECTION=''CONNEXION'' AND NAME=''FORCEPASSWORD'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''FORCER_MOT_DE_PASSE'', "SECTION"=''DROITS'' WHERE SECTION=''CONNEXION'' AND NAME=''FORCEPASSWORD'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''FORCER_MOT_DE_PASSE'', "SECTION"=''DROITS'' WHERE SECTION=''CONNEXION'' AND NAME=''FORCEPASSWORD'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''FORCER_MOT_DE_PASSE'', "SECTION"=''DROITS'' WHERE SECTION=''CONNEXION'' AND NAME=''FORCEPASSWORD'';'
+// 		);
+	End
+	Else
+	Begin
+		// V 36 : Changement de section GEDPARAM
+		if GedParamExists('CONNEXION','FORCER_MOT_DE_PASSE', '') Then
+		Begin
+			ExecuteSQL(
+				'UPDATE TGEDPARAM SET "SECTION"=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''FORCER_MOT_DE_PASSE'';'
+			);
+		// V40 FK cascade
+// 			ExecuteSQL(
+// 				'UPDATE TGEDPARAMOWNER SET "SECTION"=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''FORCER_MOT_DE_PASSE'';'
+// 			);
+// 			ExecuteSQL(
+// 				'UPDATE TGEDPARAMPROF SET "SECTION"=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''FORCER_MOT_DE_PASSE'';'
+// 			);
+// 			ExecuteSQL(
+// 				'UPDATE TGEDPARAMUSER SET "SECTION"=''DROITS'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''FORCER_MOT_DE_PASSE'';'
+// 			);
+		End;
+	End;
+
+	if GedParamExists('DROITS','APERCUPDF', '') Then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''APERCU_PDF'' WHERE SECTION=''DROITS'' AND NAME=''APERCUPDF'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''APERCU_PDF'' WHERE SECTION=''DROITS'' AND NAME=''APERCUPDF'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''APERCU_PDF'' WHERE SECTION=''DROITS'' AND NAME=''APERCUPDF'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''APERCU_PDF'' WHERE SECTION=''DROITS'' AND NAME=''APERCUPDF'';'
+// 		);
+	End
+	Else // Renommé en V33...
+	Begin
+		if not GedParamExists('DROITS','APERCU_PDF', '') Then
+			ExecuteSQL(
+				'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''APERCU_PDF'', ''2'', 0, ''1'', NULL, ''permet d''''inhiber le téléchargement de l’aperçu pdf'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+	if GedParamExists('DROITS','AFFICHERNOTE', '') Then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''AFFICHER_NOTE'' WHERE SECTION=''DROITS'' AND NAME=''AFFICHERNOTE'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''AFFICHER_NOTE'' WHERE SECTION=''DROITS'' AND NAME=''AFFICHERNOTE'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''AFFICHER_NOTE'' WHERE SECTION=''DROITS'' AND NAME=''AFFICHERNOTE'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''AFFICHER_NOTE'' WHERE SECTION=''DROITS'' AND NAME=''AFFICHERNOTE'';'
+// 		);
+	End;
+	if GedParamExists('DROITS','CHANGEPASSWORD', '') Then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''CHANGER_MOT_DE_PASSE'' WHERE SECTION=''DROITS'' AND NAME=''CHANGEPASSWORD'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''CHANGER_MOT_DE_PASSE'' WHERE SECTION=''DROITS'' AND NAME=''CHANGEPASSWORD'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''CHANGER_MOT_DE_PASSE'' WHERE SECTION=''DROITS'' AND NAME=''CHANGEPASSWORD'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''CHANGER_MOT_DE_PASSE'' WHERE SECTION=''DROITS'' AND NAME=''CHANGEPASSWORD'';'
+// 		);
+	End
+	Else
+	Begin
+		// Renommé V33
+		if not GedParamExists('DROITS','CHANGER_MOT_DE_PASSE', '') Then
+			ExecuteSQL(
+				'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''CHANGER_MOT_DE_PASSE'', ''2'', 0, ''1'', NULL, ''Permet de modifier le mot de passe d''''un utilisateur'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+	if RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''INTERFACE'' AND "NAME" LIKE ''TITRECOLONNE%'' AND NOT (TOWNER_ID IS NOT NULL OR TLIBRARY_ID IS NOT NULL);') then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=REPLACE(NAME,''TITRECOLONNE'',''TITRE_COLONNE'') WHERE SECTION=''INTERFACE'' AND NAME LIKE ''TITRECOLONNE%'' AND NOT (TOWNER_ID IS NOT NULL OR TLIBRARY_ID IS NOT NULL;'
+			);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=REPLACE(NAME,''TITRECOLONNE'',''TITRE_COLONNE'') WHERE SECTION=''INTERFACE'' AND NAME LIKE ''TITRECOLONNE%'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=REPLACE(NAME,''TITRECOLONNE'',''TITRE_COLONNE'') WHERE SECTION=''INTERFACE'' AND NAME LIKE ''TITRECOLONNE%'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=REPLACE(NAME,''TITRECOLONNE'',''TITRE_COLONNE'') WHERE SECTION=''INTERFACE'' AND NAME LIKE ''TITRECOLONNE%'';'
+// 		);
+	End;
+	if GedParamExists('INTERFACE','DESACTIVER_STOCKAGE_LOGIN', '') Then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''NE_PAS_SE_SOUVENIR_DE_MOI'' WHERE SECTION=''INTERFACE'' AND NAME=''DESACTIVER_STOCKAGE_LOGIN'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''NE_PAS_SE_SOUVENIR_DE_MOI'' WHERE SECTION=''INTERFACE'' AND NAME=''DESACTIVER_STOCKAGE_LOGIN'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''NE_PAS_SE_SOUVENIR_DE_MOI'' WHERE SECTION=''INTERFACE'' AND NAME=''DESACTIVER_STOCKAGE_LOGIN'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''NE_PAS_SE_SOUVENIR_DE_MOI'' WHERE SECTION=''INTERFACE'' AND NAME=''DESACTIVER_STOCKAGE_LOGIN'';'
+// 		);
+	End
+	Else
+	Begin
+		// Renommé V33
+		if not GedParamExists('INTERFACE','NE_PAS_SE_SOUVENIR_DE_MOI', '') Then
+			// V38 class=8
+			ExecuteSQL(
+				'UPDATE OR INSERT INTO TGEDPARAM (SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''INTERFACE'', ''NE_PAS_SE_SOUVENIR_DE_MOI'', ''2'', 8, ''0'', NULL, ''Masquer la case "Se souvenir de moi", et ne rien rien mémoriser lors de l''''accès au site WEB avec une url *contenant le nom du sous-domaine*'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+	if GedParamExists('LICENCE','MAXCONNEXION', '') Then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''MAX_CONNEXIONS'' WHERE SECTION=''LICENCE'' AND NAME=''MAXCONNEXION'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''MAX_CONNEXIONS'' WHERE SECTION=''LICENCE'' AND NAME=''MAXCONNEXION'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''MAX_CONNEXIONS'' WHERE SECTION=''LICENCE'' AND NAME=''MAXCONNEXION'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''MAX_CONNEXIONS'' WHERE SECTION=''LICENCE'' AND NAME=''MAXCONNEXION'';'
+// 		);
+	End;
+	if GedParamExists('EVENT','LOG_LEVEL', '') Then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION=''EVENEMENTS'', NAME=''NIVEAU_JOURNALISATION'' WHERE SECTION=''EVENT'' AND NAME=''LOG_LEVEL'';'
+		);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET SECTION=''EVENEMENTS'', NAME=''NIVEAU_JOURNALISATION'' WHERE SECTION=''EVENT'' AND NAME=''LOG_LEVEL'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET SECTION=''EVENEMENTS'', NAME=''NIVEAU_JOURNALISATION'' WHERE SECTION=''EVENT'' AND NAME=''LOG_LEVEL'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET SECTION=''EVENEMENTS'', NAME=''NIVEAU_JOURNALISATION'' WHERE SECTION=''EVENT'' AND NAME=''LOG_LEVEL'';'
+// 		);
+	End;
+	// MAJ anciennes versions mais certaines bases (prod Novaxel) n'ont pas été impactées ??? On refait ici...
+	if not GedParamExists('INTERFACE','FOND_POSITION', '') Then
+		// V38 class=8
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''INTERFACE'', ''FOND_POSITION'', ''3'', 8, ''0'', NULL, ''Position de l''''Image de fond : 0: centré  //Par défaut - 1:en haut à gauche - 2: en haut à droite - 3:en bas à gauche - 4:en bas à droite'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		)
+	else
+	Begin
+		// V36 : mauvaise init valeur par défaut...
+		if GedParamExists('INTERFACE','FOND_POSITION', 'AND DEFAULTVALUE=''1''') then
+			ExecuteSQL(
+			'UPDATE TGEDPARAM SET DEFAULTVALUE=''0'' WHERE "SECTION"=''INTERFACE'' AND "NAME"=''FOND_POSITION'' AND DEFAULTVALUE=''1'';'
+		);
+	End;
+		
+	// MAJ V36 : valeur par défaut erronée (FALSE => TRUE)
+	if (not GedParamExists('INTERFACE','FOND_ETIRER', '')) or 
+		(GedParamExists('INTERFACE','FOND_ETIRER','AND DEFAULTVALUE=''0''')) Then
+		// V38 class=8
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''INTERFACE'', ''FOND_ETIRER'', ''2'', 8, ''1'', NULL, ''Image de fond étirée'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+
+	// V34
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''MANAGED_BY_GROUP''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM (SECTION, NAME, "TYPE", "VALUE", VALUEBLB, "COMMENT", PROTECTION) VALUES (''DOMAIN'', ''MANAGED_BY_GROUP'', ''3'', ''512'', NULL, ''État d''''un utilisateur GED ne pouvant être géré qu''''au niveau d''''un groupe d''''utilisateur pour les accès et droits sur les bibliothèques (gestion d''''un nombre important)'', ''0'') MATCHING ("SECTION", "NAME");'
+		);
+	// GEDPARAM LIEN renommé en V34
+	if GedParamExists('DROITS','LIEN', '') Then
+	Begin
+		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''PARTAGE_DOCUMENT'' WHERE SECTION=''DROITS'' AND NAME=''LIEN'';'
+			);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''PARTAGE_DOCUMENT'' WHERE SECTION=''DROITS'' AND NAME=''LIEN'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''PARTAGE_DOCUMENT'' WHERE SECTION=''DROITS'' AND NAME=''LIEN'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''PARTAGE_DOCUMENT'' WHERE SECTION=''DROITS'' AND NAME=''LIEN'';'
+// 		);
+	End;
+	if not GedParamExists('INTERFACE','BARRE_OUTILS', '') Then
+		// V38 class=8
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''INTERFACE'', ''BARRE_OUTILS'', ''3'', 8, ''0'', NULL, ''Affichage de la barre d''''outils WEB (permet de masquer la barre d''''outils en iframe par exemple)'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('INTERFACE','LOGO', '') Then
+		// V38 class=8
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''INTERFACE'', ''LOGO'', ''8'', 8, NULL, NULL, ''Logo à appliquer au sous domaine ou couleur de fond en noir (#000000) pour faire disparaître le fond '', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	// Changement de type de 1 -> 16 ...
+	// Plus utilisé depuis la version 39
+// 	if RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME" LIKE ''N_'' AND "TYPE"=1;') then
+// 	Begin
+// 		// On envoie les MAJ sur toutes les tables concernées inconditionnelement...
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAM SET "TYPE"=16 WHERE "SECTION"=''CONNEXION'' AND "NAME" LIKE ''N_'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET "TYPE"=16 WHERE "SECTION"=''CONNEXION'' AND "NAME" LIKE ''N_'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET "TYPE"=16 WHERE "SECTION"=''CONNEXION'' AND "NAME" LIKE ''N_'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET "TYPE"=16 WHERE "SECTION"=''CONNEXION'' AND "NAME" LIKE ''N_'';'
+// 		);
+// 	End;
+	// Changement de valeur par défaut (NULL => 0)
+	if GedParamExists('EVENEMENTS','NIVEAU_JOURNALISATION','AND "DEFAULTVALUE" IS NULL') then
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET "DEFAULTVALUE"=''0'' WHERE "SECTION"=''EVENEMENTS'' AND "NAME" = ''NIVEAU_JOURNALISATION'';'
+		);
+
+	// V35
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''SYNCHRO'' AND "NAME"=''EMAIL_ALERT'';') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''SYNCHRO'',''EMAIL_ALERT'',''1'',''[%domain_name%] Synchronisation non effectuée pour la bibliothèque %lib_titre% [%owner_id_externe%]'',''Bonjour %contact_prefix% %contact_firstname% %contact_name%,' +
+			CRLF +
+			CRLF +
+			'Vous recevez ce message car vous avez demandé à être alerté si votre bibliothèque GED n''''a pas été synchronisée sur le domaine "%domain_name%" depuis un certain nombre de jours...' +
+			CRLF + 
+			CRLF +
+			'Aucune synchronisation n''''a eu lieu pour la bibliothèque suivante depuis %nb_days% jours :' +
+			CRLF + '- Titre : %lib_titre%' + 
+			CRLF + '- Code interne : %lib_id%' + 
+			CRLF + '- Date et heure de la dernière synchronisation : %sync_date%' +
+			CRLF +
+			CRLF +'%signature%'',''Email d''''alerte envoyé au contact en cas de non synchronisation depuis un délai donné'',1) MATCHING("SECTION","NAME");'
+		);
+
+	// V36
+	// Actions ponctuelles juste pour cette MAJ (on ne reproduit pas pour ne pas altérer les GEDPARAMS avant/après)
+	// Ceci est du à la mise à jour de la valeur de la constante ClParam_AlphaBlob (16 => 10)...
+	// Attention, ce n'est pas idéal car si on passe directement de X à >36, ces paramètres ne seont pas touchés
+	// TODO : dès que l'on aura effectivement des paramètres type = 16 (pas encore en V38), il faudra limiter le champ de cette modification (if (DOMAIN_FINALVER>=36 and DOMAIN_FINALVER<=XX then)
+	// DONE : V39 : on ne met plus à jour car il existe maintenant des ClParam_AlphaBlob...
+	if (DOMAIN_FINALVER>=36) and (DOMAIN_FINALVER<39) then
+	Begin
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET "TYPE"=10 WHERE "TYPE"=16;'
+			);
+		// V40 FK Cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET "TYPE"=10 WHERE "TYPE"=16;'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET "TYPE"=10 WHERE "TYPE"=16;'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET "TYPE"=10 WHERE "TYPE"=16;'
+// 		);
+	End;
+
+	// Suppression (pas/plus utilisés)
+	If RecordExists('SELECT "DEFAULTVALUE" FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME" like ''N_'';') then
+	Begin
+		ExecuteSQL(
+			'DELETE FROM TGEDPARAM WHERE "SECTION"=''CONNEXION'' AND "NAME" like ''N_'';'
+			);
+		// V40 : FK Cascade doit supprimer les enfants...
+// 		ExecuteSQL(
+// 			'DELETE FROM TGEDPARAMOWNER WHERE "SECTION"=''CONNEXION'' AND "NAME" like ''N_'';'
+// 		);
+// 		ExecuteSQL(
+// 			'DELETE FROM TGEDPARAMPROF WHERE "SECTION"=''CONNEXION'' AND "NAME" like ''N_'';'
+// 		);
+// 		ExecuteSQL(
+// 			'DELETE FROM TGEDPARAMUSER WHERE "SECTION"=''CONNEXION'' AND "NAME" like ''N_'';'
+// 		);
+	End;
+
+
+	// Changement de nom entre 2 version 36 :-(...
+	If GedParamExists('CONNEXION','ZXEQUAL', '') Then
+	Begin
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET NAME=''ZXEGAL'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''ZXEQUAL'';'
+			);
+		// V40 FK cascade
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMOWNER SET NAME=''ZXEGAL'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''ZXEQUAL'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMPROF SET NAME=''ZXEGAL'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''ZXEQUAL'';'
+// 		);
+// 		ExecuteSQL(
+// 			'UPDATE TGEDPARAMUSER SET NAME=''ZXEGAL'' WHERE "SECTION"=''CONNEXION'' AND "NAME"=''ZXEQUAL'';'
+// 		);
+	End
+	Else
+	Begin
+		if not GedParamExists('CONNEXION','ZXEGAL', '') Then
+			ExecuteSQL(
+				'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''ZXEGAL'', ''2'', 0, ''0'', NULL, ''Indique si les filtres Zx s''''appliquent en "commence par" (ZXEGAL=false) ou en égalité (ZXEGAL=true)'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+	if not GedParamExists('CONNEXION','M1', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''M1'', ''10'', 0, NULL, NULL, ''Filtre métadonnée sur la 1ère colonne  dans valeur Blob'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('CONNEXION','M2', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''M2'', ''10'', 0, NULL, NULL, ''Filtre métadonnée sur la 2ème colonne  dans valeur Blob'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('CONNEXION','M3', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''M3'', ''10'', 0, NULL, NULL, ''Filtre métadonnée sur la 3ème colonne  dans valeur Blob'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('CONNEXION','M4', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''M4'', ''10'', 0, NULL, NULL, ''Filtre métadonnée sur la 4ème colonne  dans valeur Blob'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('CONNEXION','M5', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''M5'', ''10'', 0, NULL, NULL, ''Filtre métadonnée sur la 5ème colonne  dans valeur Blob'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+
+	if not GedParamExists('SYNCHRO','FORCESYNC_SANS_REINTEG', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''SYNCHRO'', ''FORCESYNC_SANS_REINTEG'', ''2'', 0, ''0'', NULL, ''Permet de forcer la synchro même si des documents sont en attente de réintégration (attention, les fichiers en panières seront supprimés !)'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('CONNEXION','MATRICE', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''MATRICE'', ''1'', 0, NULL, NULL, ''Nom de la matrice de droits'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+
+	if not GedParamExists('CONNEXION','MATRICE_LISTES', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''MATRICE_LISTES'', ''1'', 0, NULL, NULL, ''Nom de la matrice de liste automatique'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('CONNEXION','MATRICE_LISTES_AUTO', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''CONNEXION'', ''MATRICE_LISTES_AUTO'', ''2'', 0, ''1'', NULL, ''Exécution automatique après ajout d''''un item.' + CRLF + 'inhibé si on est pas en ACCESS_MODE=2  (Full sas)'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('DROITS','AFFICHER_DETAILS_ITEM', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''AFFICHER_DETAILS_ITEM'', ''2'', 0, ''1'', NULL, ''Permet d''''inhiber l''''affichage des détails sur les items si faux'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID);'
+		);
+
+	if not GedParamExists('INTERFACE','RESOLUTION_APERCU', '') Then
+		// V38 class=8
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''INTERFACE'', ''RESOLUTION_APERCU'', ''3'', 8, ''75'', NULL, ''Résolution (en dpi) pour générer les aperçu png'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID);'
+		);
+
+
+	// V37
+	if not GedParamExists('DROITS','PARAMETRER', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''ACCUEIL'', ''2'', 0, ''1'', NULL, ''Disposer de la fonction de paramétrage'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID);'
+		);
+	if not GedParamExists('DROITS','PARAMETRER', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''ACCUEIL'', ''2'', 0, ''1'', NULL, ''Disposer de la fonction de retour liste des bibliothèques'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID);'
+		);
+	if not GedParamExists('DROITS','DECONNECTER', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''DECONNECTER'', ''2'', 0, ''1'', NULL, ''Disposer de la fonction de déconnexion'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID);'
+		);
+	if not GedParamExists('DROITS','TAILLE_MAXIMUM', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''TAILLE_MAXIMUM'', ''3'', 0, ''10'', NULL, ''Taille maximum des documents en Mo'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID);'
+		);
+
+
+	// V38
+	// Ajout TDOMPARAM
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPEASCII''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPEASCII'',''1'',''.DAT.LNOV.TXT.ASC.SYS.LOG'',NULL,''Type de fichier ASCII GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPEIE''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPEIE'',''1'',''.HTML.DJVU.MHT.MHTML'',NULL,''Type de fichier WEB GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPEIMAGE''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPEIMAGE'',''1'',''.TIF.PCX.BMP.JPG.IMG.PCT.PNG.DCX.FXS.FXR.GIF.JPEG.TIFF'',NULL,''Type de fichier image GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPENOLE''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPENOLE'',''1'',''.DB.PUB.PAR.SXC.SXW.ZIP.7Z'',NULL,''Type de fichier OLE GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPENPDF''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPENPDF'',''1'',''.PDF'',NULL,''Type de fichier PDF GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPEOLE''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPEOLE'',''1'',''.DOC.XLS.PPT.XLSX.DOCX.PPTX.XLSM.XLW.ODT.ODS.ODP.ODG'',NULL,''Type de fichier bureautique GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPEPCL''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPEPCL'',''1'',''.SPL.PCL.LIS'',NULL,''Type de fichier PCL GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPEPDF''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPEPDF'',''1'',''.XXXX'',NULL,''Type de fichier PDF GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPERTF''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPERTF'',''1'',''.RTF'',NULL,''Type de fichier RTF GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPESCRIPT''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPESCRIPT'',''1'',''.SNOV.PAS.SQL.BAT.VBS.XNOV.CMD.C'',NULL,''Type de fichier script GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPEMSG''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPEMSG'',''1'',''.MSG.EML'',NULL,''Type de fichier messagerie GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''TYPEEMF''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''TYPEEMF'',''1'',''.EMF.WMF'',NULL,''Type de fichier image vectorielle GED'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''ASPOSE_CELLS''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''ASPOSE_CELLS'',''1'',''.XLS.XLSX.XLSM.ODS'',NULL,''Type de fichier pris en charge par Aspose Cells'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''ASPOSE_EMAIL''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''ASPOSE_EMAIL'',''1'',''.EML.MSG'',NULL,''Type de fichier pris en charge par Aspose Email'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''ASPOSE_SLIDES''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''ASPOSE_SLIDES'',''1'',''.PPT.PPTX.ODP'',NULL,''Type de fichier pris en charge par Aspose Slide'',1) MATCHING("SECTION","NAME");'
+		);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''GED'' AND "NAME"=''ASPOSE_WORDS''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''GED'',''ASPOSE_WORDS'',''1'',''.DOC.DOCX.ODT.RTF'',NULL,''Type de fichier pris en charge par Aspose Words'',1) MATCHING("SECTION","NAME");'
+		);
+
+	// MAJ des class TGEDPARAM SECTION "INTERFACE"
+	ExecuteSQL(
+		'UPDATE TGEDPARAM SET CLASS=BIN_OR(TGEDPARAM.CLASS,8) WHERE SECTION=''INTERFACE'';'
+	);
+	if not GedParamExists('DROITS','TAILLE_MAXIMUM', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''TAILLE_MAXIMUM'', ''3'', 0, ''10'', NULL, ''Taille maximum des documents en Mo'', NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID);'
+		);
+	// Création nouveaux GEDPARAM
+	// MAJ NAME en V40
+	if GedParamExists('DROITS','PILOTAGE_NOVAXELCLOUD', '') Then
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET "NAME"=''COMPAGNON'' WHERE SECTION=''DROITS'' AND "NAME"=''PILOTAGE_NOVAXELCLOUD'';'
+			);
+
+	// Changement de nom entre 2 versions MAJ V40 :-(
+	if GedParamExists('DROITS','PILOTAGE_COMPAGNON', '') Then
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET "NAME"=''COMPAGNON'' WHERE SECTION=''DROITS'' AND "NAME"=''PILOTAGE_COMPAGNON'';'
+			);
+
+	if not GedParamExists('DROITS','COMPAGNON', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''COMPAGNON'', ''2'', 0, ''0'', NULL, ''Indique si le client web utilise le nouveau mécanisme de pilotage de Novaxel cloud (par requêtes http)'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		)
+	else
+	Begin
+		// MAJ DEFAUTLVALUE entre 2 versions 38
+		if DOMAIN_FINALVER=38 then
+			ExecuteSQL(
+				'UPDATE TGEDPARAM SET DEFAULTVALUE=''0'' WHERE  "SECTION"=''DROITS'' AND "NAME"=''COMPAGNON'';'
+			);
+	End;
+
+	// MAJ V40 : Changement de nom de section "NOVAXELCLOUD" => "COMPAGNON"
+	ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION=''COMPAGNON'' WHERE SECTION=''NOVAXELCLOUD'';'
+			);
+
+	if not GedParamExists('COMPAGNON','NOM_HOTE', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''COMPAGNON'', ''NOM_HOTE'', ''1'', 8, ''COMPAGNON.cloudnovaxel.fr'', NULL, ''Nom d''''hôte serveur local COMPAGNON'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('COMPAGNON','PORT_HTTP', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''COMPAGNON'', ''PORT_HTTP'', ''3'', 8, ''8870'', NULL, ''Port HTTP serveur local COMPAGNON'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('COMPAGNON','PORT_HTTPS', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''COMPAGNON'', ''PORT_HTTPS'', ''3'', 8, ''4470'', NULL, ''Port HTTPS serveur local COMPAGNON'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('COMPAGNON','CERTIFICAT', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''COMPAGNON'', ''CERTIFICAT'', ''10'', 10, NULL,NULL, ''Certificat (avec chaîne complète) HTTPS serveur local COMPAGNON'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		)
+	else
+	Begin
+		// MAJ class entre 2 versions 38
+		if DOMAIN_FINALVER=38 then
+			ExecuteSQL(
+				'UPDATE TGEDPARAM SET CLASS=10 WHERE  "SECTION"=''COMPAGNON'' AND "NAME"=''CERTIFICAT'';'
+			);
+	End;
+	// MAJ inconditionnelle du certificat : TODO à mettre à jour à chaque nouveau certificat
+	// MAJ V40
+	if GedParamExists('COMPAGNON','CERTIFICAT', '') Then
+		
+		ExecuteSQL(
+		'UPDATE TGEDPARAM SET DEFAULTVALUEBLB=''' +
+		CRLF + '-----BEGIN CERTIFICATE-----' +
+		CRLF + 'MIIGFTCCBP2gAwIBAgIQD7hohkikO1naM1iriniQgTANBgkqhkiG9w0BAQsFADCB' +
+		CRLF + 'ljELMAkGA1UEBhMCR0IxGzAZBgNVBAgTEkdyZWF0ZXIgTWFuY2hlc3RlcjEQMA4G' +
+		CRLF + 'A1UEBxMHU2FsZm9yZDEaMBgGA1UEChMRQ09NT0RPIENBIExpbWl0ZWQxPDA6BgNV' +
+		CRLF + 'BAMTM0NPTU9ETyBSU0EgT3JnYW5pemF0aW9uIFZhbGlkYXRpb24gU2VjdXJlIFNl' +
+		CRLF + 'cnZlciBDQTAeFw0xNTAzMTAwMDAwMDBaFw0xODAzMTAyMzU5NTlaMIHpMQswCQYD' +
+		CRLF + 'VQQGEwJGUjEOMAwGA1UEERMFNjkwMDYxDzANBgNVBAgMBlJow7RuZTENMAsGA1UE' +
+		CRLF + 'BxMETFlPTjEcMBoGA1UECRMTNTUgQkQgREVTIEJST1RURUFVWDEQMA4GA1UEChMH' +
+		CRLF + 'Tk9WQVhFTDEXMBUGA1UECxMOMDAwMiAzOTg0ODEyNTkxHTAbBgNVBAsTFFNlcnZp' +
+		CRLF + 'Y2UgaW5mb3JtYXRpcXVlMRswGQYDVQQLExJYNTA5IEVjb21tZXJjZSBUQlMxJTAj' +
+		CRLF + 'BgNVBAMTHG5vdmF4ZWxjbG91ZC5jbG91ZG5vdmF4ZWwuZnIwggEiMA0GCSqGSIb3' +
+		CRLF + 'DQEBAQUAA4IBDwAwggEKAoIBAQDkd1Yd4Bbv0gFzU9gedIz/z5ki8C6aMHitgi8h' +
+		CRLF + 'IpDwVaB4CMTYk1kHTtJrkXQ7/dwMks1Gg68V5DGvYGJRPoVP/jjbh/lrYYdpQLdk' +
+		CRLF + 'EBPxJrkHx6bbc8OQDcqAA5JXgeOpZtKeDavAD+WFVnyqLmGTBvxbzSUNaxTVgGqK' +
+		CRLF + 'Qe3iI6I/4sATwEjhl1gJNoz6WZZ/mbPLVTcxSZxu9ue3j6zSIGC4BHrUOzh5On4a' +
+		CRLF + 'I/o3K7wQ4KLCG09jU57tsgZE34xaFiVX4qUvTLDAe8YIt0p2mseS4/QPeed8jjQ+' +
+		CRLF + 'D/pcr58lov++mWhYJ7yPRr33is37t9swBuTA0JeES6o9xInTAgMBAAGjggIIMIIC' +
+		CRLF + 'BDAfBgNVHSMEGDAWgBSa8yvaz61Pti+7KkhIKhK3G0LBJDAdBgNVHQ4EFgQUP4NS' +
+		CRLF + 'I+GXK9RXTOELpR2ivcNc+U4wDgYDVR0PAQH/BAQDAgWgMAwGA1UdEwEB/wQCMAAw' +
+		CRLF + 'HQYDVR0lBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMFAGA1UdIARJMEcwOwYMKwYB' +
+		CRLF + 'BAGyMQECAQMEMCswKQYIKwYBBQUHAgEWHWh0dHBzOi8vc2VjdXJlLmNvbW9kby5j' +
+		CRLF + 'b20vQ1BTMAgGBmeBDAECAjBaBgNVHR8EUzBRME+gTaBLhklodHRwOi8vY3JsLmNv' +
+		CRLF + 'bW9kb2NhLmNvbS9DT01PRE9SU0FPcmdhbml6YXRpb25WYWxpZGF0aW9uU2VjdXJl' +
+		CRLF + 'U2VydmVyQ0EuY3JsMIGLBggrBgEFBQcBAQR/MH0wVQYIKwYBBQUHMAKGSWh0dHA6' +
+		CRLF + 'Ly9jcnQuY29tb2RvY2EuY29tL0NPTU9ET1JTQU9yZ2FuaXphdGlvblZhbGlkYXRp' +
+		CRLF + 'b25TZWN1cmVTZXJ2ZXJDQS5jcnQwJAYIKwYBBQUHMAGGGGh0dHA6Ly9vY3NwLmNv' +
+		CRLF + 'bW9kb2NhLmNvbTBJBgNVHREEQjBAghxub3ZheGVsY2xvdWQuY2xvdWRub3ZheGVs' +
+		CRLF + 'LmZygiB3d3cubm92YXhlbGNsb3VkLmNsb3Vkbm92YXhlbC5mcjANBgkqhkiG9w0B' +
+		CRLF + 'AQsFAAOCAQEAnwA2dsjDK77gD1/LG7YGD8nqEzzJ/7ikji7lqwXFrzVL57RiK//l' +
+		CRLF + '7s82P+xaQV9tOH0kNm6zNAdCrSaJis/47wzp7gmxZbMjVMNi/IeIb4mbWW60/pi0' +
+		CRLF + 'uoe59ZBvyxR5h3zkVcd2HWvT/LxqbCudvJ8oMbBY+86pAw+SuyoHCjlJQ+CtF32H' +
+		CRLF + 'A/wBBdUW/8rj/wUP0QDgfnFqfMedtwvl4PKqSryIlj28GWfdNVMjcD300uPJvbbG' +
+		CRLF + '9ChR91NLArOutJ8s8ZhDUTTjUC9HBJNkbMauSaGxc9zICrSZTErk70BkqVIXzBls' +
+		CRLF + 'zTc4zTgNc4X0U96XjV91UBbdfzNmUFmPvg==' +
+		CRLF + '-----END CERTIFICATE-----' +
+		CRLF + '-----BEGIN CERTIFICATE-----' +
+		CRLF + 'MIIGDjCCA/agAwIBAgIQNoJef7WkgZN+9tFza7k8pjANBgkqhkiG9w0BAQwFADCB' +
+		CRLF + 'hTELMAkGA1UEBhMCR0IxGzAZBgNVBAgTEkdyZWF0ZXIgTWFuY2hlc3RlcjEQMA4G' +
+		CRLF + 'A1UEBxMHU2FsZm9yZDEaMBgGA1UEChMRQ09NT0RPIENBIExpbWl0ZWQxKzApBgNV' +
+		CRLF + 'BAMTIkNPTU9ETyBSU0EgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkwHhcNMTQwMjEy' +
+		CRLF + 'MDAwMDAwWhcNMjkwMjExMjM1OTU5WjCBljELMAkGA1UEBhMCR0IxGzAZBgNVBAgT' +
+		CRLF + 'EkdyZWF0ZXIgTWFuY2hlc3RlcjEQMA4GA1UEBxMHU2FsZm9yZDEaMBgGA1UEChMR' +
+		CRLF + 'Q09NT0RPIENBIExpbWl0ZWQxPDA6BgNVBAMTM0NPTU9ETyBSU0EgT3JnYW5pemF0' +
+		CRLF + 'aW9uIFZhbGlkYXRpb24gU2VjdXJlIFNlcnZlciBDQTCCASIwDQYJKoZIhvcNAQEB' +
+		CRLF + 'BQADggEPADCCAQoCggEBALkU2YXyQURX/zBEHtw8RKMXuG4B+KNfwqkhHc5Z9Ozz' +
+		CRLF + 'iKkJMjyxi2OkPic284/5OGYuB5dBj0um3cNfnnM858ogDU98MgXPwS5IZUqF0B9W' +
+		CRLF + 'MW2O5cYy1Bu8n32W/JjXT/j0WFb440W+kRiC5Iq+r81SN1GHTx6Xweg6rvn/RuRl' +
+		CRLF + 'Pz/DR4MvzLhCXi1+91porl1LwKY1IfWGo8hJi5hjYA3JIUjCkjBlRrKGNQRCJX6t' +
+		CRLF + 'p05LEkAAeohoXG+fo6R4ESGuPQsOvkUUI8/rddf2oPG8RWxevKEy7PNYeEIoCzoB' +
+		CRLF + 'dvDFoJ7BaXDej0umed/ydrbjDxN8GDuxUWxqIDnOnmkCAwEAAaOCAWUwggFhMB8G' +
+		CRLF + 'A1UdIwQYMBaAFLuvfgI9+qbxPISOre44mOzZMjLUMB0GA1UdDgQWBBSa8yvaz61P' +
+		CRLF + 'ti+7KkhIKhK3G0LBJDAOBgNVHQ8BAf8EBAMCAYYwEgYDVR0TAQH/BAgwBgEB/wIB' +
+		CRLF + 'ADAdBgNVHSUEFjAUBggrBgEFBQcDAQYIKwYBBQUHAwIwGwYDVR0gBBQwEjAGBgRV' +
+		CRLF + 'HSAAMAgGBmeBDAECAjBMBgNVHR8ERTBDMEGgP6A9hjtodHRwOi8vY3JsLmNvbW9k' +
+		CRLF + 'b2NhLmNvbS9DT01PRE9SU0FDZXJ0aWZpY2F0aW9uQXV0aG9yaXR5LmNybDBxBggr' +
+		CRLF + 'BgEFBQcBAQRlMGMwOwYIKwYBBQUHMAKGL2h0dHA6Ly9jcnQuY29tb2RvY2EuY29t' +
+		CRLF + 'L0NPTU9ET1JTQUFkZFRydXN0Q0EuY3J0MCQGCCsGAQUFBzABhhhodHRwOi8vb2Nz' +
+		CRLF + 'cC5jb21vZG9jYS5jb20wDQYJKoZIhvcNAQEMBQADggIBAGmKNmiaHjtlC+B8z6ar' +
+		CRLF + 'cTuvYaQ/5GQBSRDTHY/i1e1n055bl71CHgf50Ltt9zKVWiIpYvgMnFlWJzagIhIR' +
+		CRLF + '+kf0UclZeylKpUg1fMWXZuAnJTsVejJ1SpH7pmue4lP6DYwT+yO4CxIsru3bHUeQ' +
+		CRLF + '1dCTaXaROBU01xjqfrxrWN4qOZADRARKVtho5fV8aX6efVRL0NiGq2dmE1deiSoX' +
+		CRLF + 'rS2uvUAOZu2K/1S0wQHLqeBHuhFhj62uI0gqxiV5iRxBBJXAEepXK9a0l/qx6RVi' +
+		CRLF + '7Epxd/3zoZza9msAKcUy5/pO6rMqpxiXHFinQjZf7BTP+HsO993MiBWamlzI8SDH' +
+		CRLF + '0YZyoRebrrr+bKgy0QB2SXP3PyeHPLbJLfqqkJDJCgmfyWkfBxmpv966+AuIgkQW' +
+		CRLF + 'EH8HwIAiX3+8MN66zQd5ZFbY//NPnDC7bh5RS+bNvRfExb/IP46xH4pGtwZDb2It' +
+		CRLF + 'z1GdRcqK6ROLwMeRvlu2+jdKif7wndoTJiIsBpA+ixOYoBnW3dpKSH89D4mdJHJL' +
+		CRLF + 'DntE/9Q2toN2I1iLFGy4XfdhbTl27d0SPWuHiJeRvsBGAh52HN22r1xP9QDWnE2p' +
+		CRLF + '4J6ijvyxFnlcIdNFgZoMOWxtKNcl0rcRkND23m9e9Pqki2Z3ci+bkEAsUhJg+f+1' +
+		CRLF + 'cC6JmnkJiYEt7Fx4b4GH8fxV' +
+		CRLF + '-----END CERTIFICATE-----' +
+		CRLF + '-----BEGIN CERTIFICATE-----' +
+		CRLF + 'MIIFdDCCBFygAwIBAgIQJ2buVutJ846r13Ci/ITeIjANBgkqhkiG9w0BAQwFADBv' +
+		CRLF + 'MQswCQYDVQQGEwJTRTEUMBIGA1UEChMLQWRkVHJ1c3QgQUIxJjAkBgNVBAsTHUFk' +
+		CRLF + 'ZFRydXN0IEV4dGVybmFsIFRUUCBOZXR3b3JrMSIwIAYDVQQDExlBZGRUcnVzdCBF' +
+		CRLF + 'eHRlcm5hbCBDQSBSb290MB4XDTAwMDUzMDEwNDgzOFoXDTIwMDUzMDEwNDgzOFow' +
+		CRLF + 'gYUxCzAJBgNVBAYTAkdCMRswGQYDVQQIExJHcmVhdGVyIE1hbmNoZXN0ZXIxEDAO' +
+		CRLF + 'BgNVBAcTB1NhbGZvcmQxGjAYBgNVBAoTEUNPTU9ETyBDQSBMaW1pdGVkMSswKQYD' +
+		CRLF + 'VQQDEyJDT01PRE8gUlNBIENlcnRpZmljYXRpb24gQXV0aG9yaXR5MIICIjANBgkq' +
+		CRLF + 'hkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAkehUktIKVrGsDSTdxc9EZ3SZKzejfSNw' +
+		CRLF + 'AHG8U9/E+ioSj0t/EFa9n3Byt2F/yUsPF6c947AEYe7/EZfH9IY+Cvo+XPmT5jR6' +
+		CRLF + '2RRr55yzhaCCenavcZDX7P0N+pxs+t+wgvQUfvm+xKYvT3+Zf7X8Z0NyvQwA1onr' +
+		CRLF + 'ayzT7Y+YHBSrfuXjbvzYqOSSJNpDa2K4Vf3qwbxstovzDo2a5JtsaZn4eEgwRdWt' +
+		CRLF + '4Q08RWD8MpZRJ7xnw8outmvqRsfHIKCxH2XeSAi6pE6p8oNGN4Tr6MyBSENnTnIq' +
+		CRLF + 'm1y9TBsoilwie7SrmNnu4FGDwwlGTm0+mfqVF9p8M1dBPI1R7Qu2XK8sYxrfV8g/' +
+		CRLF + 'vOldxJuvRZnio1oktLqpVj3Pb6r/SVi+8Kj/9Lit6Tf7urj0Czr56ENCHonYhMsT' +
+		CRLF + '8dm74YlguIwoVqwUHZwK53Hrzw7dPamWoUi9PPevtQ0iTMARgexWO/bTouJbt7IE' +
+		CRLF + 'IlKVgJNp6I5MZfGRAy1wdALqi2cVKWlSArvX31BqVUa/oKMoYX9w0MOiqiwhqkfO' +
+		CRLF + 'KJwGRXa/ghgntNWutMtQ5mv0TIZxMOmm3xaG4Nj/QN370EKIf6MzOi5cHkERgWPO' +
+		CRLF + 'GHFrK+ymircxXDpqR+DDeVnWIBqv8mqYqnK8V0rSS527EPywTEHl7R09XiidnMy/' +
+		CRLF + 's1Hap0flhFMCAwEAAaOB9DCB8TAfBgNVHSMEGDAWgBStvZh6NLQm9/rEJlTvA73g' +
+		CRLF + 'JMtUGjAdBgNVHQ4EFgQUu69+Aj36pvE8hI6t7jiY7NkyMtQwDgYDVR0PAQH/BAQD' +
+		CRLF + 'AgGGMA8GA1UdEwEB/wQFMAMBAf8wEQYDVR0gBAowCDAGBgRVHSAAMEQGA1UdHwQ9' +
+		CRLF + 'MDswOaA3oDWGM2h0dHA6Ly9jcmwudXNlcnRydXN0LmNvbS9BZGRUcnVzdEV4dGVy' +
+		CRLF + 'bmFsQ0FSb290LmNybDA1BggrBgEFBQcBAQQpMCcwJQYIKwYBBQUHMAGGGWh0dHA6' +
+		CRLF + 'Ly9vY3NwLnVzZXJ0cnVzdC5jb20wDQYJKoZIhvcNAQEMBQADggEBAGS/g/FfmoXQ' +
+		CRLF + 'zbihKVcN6Fr30ek+8nYEbvFScLsePP9NDXRqzIGCJdPDoCpdTPW6i6FtxFQJdcfj' +
+		CRLF + 'Jw5dhHk3QBN39bSsHNA7qxcS1u80GH4r6XnTq1dFDK8o+tDb5VCViLvfhVdpfZLY' +
+		CRLF + 'Uspzgb8c8+a4bmYRBbMelC1/kZWSWfFMzqORcUx8Rww7Cxn2obFshj5cqsQugsv5' +
+		CRLF + 'B5a6SE2Q8pTIqXOi6wZ7I53eovNNVZ96YUWYGGjHXkBrI/V5eu+MtWuLt29G9Hvx' +
+		CRLF + 'PUsE2JOAWVrgQSQdso8VYFhH2+9uRv0V9dlfmrPb2LjkQLPNlzmuhbsdjrzch5vR' +
+		CRLF + 'pu/xO28QOG8=' +
+		CRLF + '-----END CERTIFICATE-----''' +
+		' WHERE  "SECTION"=''COMPAGNON'' AND "NAME"=''CERTIFICAT'';'
+	);
+	if not GedParamExists('COMPAGNON','CLE_PRIVEE', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''COMPAGNON'', ''CLE_PRIVEE'', ''10'', 10,NULL, NULL,''Clé privée du certificat (cryptée) HTTPS serveur local novaxelcloud'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		)
+	else
+	Begin
+		// MAJ class entre 2 versions 38
+		if DOMAIN_FINALVER=38 then
+			ExecuteSQL(
+				'UPDATE TGEDPARAM SET CLASS=10 WHERE  "SECTION"=''COMPAGNON'' AND "NAME"=''CLE_PRIVEE'';'
+			);
+	End;
+	// MAJ inconditionnelle de la clé privéee : TODO à mettre à jour à chaque nouveau certificat
+	// MAJ V40
+	ExecuteSQL(
+		'UPDATE TGEDPARAM SET DEFAULTVALUEBLB=''ipxrW8ivoAuc7lWU1rknZLjwOd7WuS0V87t/cylfafwXRkFY8/+TFWe9w2dI+S/whFjNdIBHVFSRzkIwu/1yTouGgBYIZDhQFOBy4dOappJDuOgBEGQ5q+ke1JW5UpgNRkCyKYdxmQZhm0RaXqJy2gDQVaCwMLKgNyn1D+xT9Ivmz+P0zO0HZ1khydxOIP3boPSgGX7yEHgMPP5404B0lkjHPkW6uUWDo13ABHr7gYuqF+QfSNOWGMkV/OFC13+RZeyAB+PqO6K2i92LWKGtqdJGhu3ajSCac3hfKl9ZjjvnyQWWmkLsiAkC7E9zrq000xYt8Lz6QAnz706T7szuczG3wTMuNw5Zf14wPq4ygOrGFFMi/SvZ/1zJiXvSmO/SP1sHIPW5A8tQ25PZgcpCzcETOxqYjo4TtdXlArSj/XyGQ/oSNf2+CRs1egiXAVeHvgLfjm3ET+PHVp3C7klJjLyUkOUjvJUSpLOir2njfr/JY3DCL4vkNxKmy57WAP5Ca+hDmDntZaqJyJPe/6duUE2mKL7VuVdo/iYAREumEzP7eu9V1Tdshyi5o7BPPqijPPbAYnlmyCaBQUM2l08BY5gyq8vwR22q5b+NGQP8z6MrIf6b5mRP7opVCvlGyAmJwdnKjpBQ/NCTxIGkzOX6aOfG431tezHoF3sGx4gA3J/NOCeOjBjZOWfKrxC0weOvzMJH/BiynQVF8WpBoiabxj1ASryPsDohz5Ru76O16ZFJZ7jkoud0PRrLKf7PMYS790cCJMhzccfUn+gAlYfxTRWjz98pC78DmqYdP2NRGE9Xs8YRU1+ELceFLZeV/T2ddu5UhljPPUMgYgx1gLQjz6PwaHDWkDnxSSgcPsL1j38NuLApFTQIQq9FxdbOPqvEwIUGVvoeF6rUgVpoZLEIOt+cclaZYZlzjE06Z6XKGv0lEe5lihfpEhnf51xDuwfJJ9WYUsbp0m7yn019EFMwH9kzkd92a6VgvMrYdofik1ZBMX2KhwVAsl+UbQenwyJlgT2Xp7tfvMLeODLJnQ/Jm7MIUYxDIUWuTvUsrGxM9Z6tKkOOuEjaEByWH5H/yq8QvyYluaAd6mBHQDOGhivgGmfSalHt/i9rO3DjjSXoZdriUQefPJnrglGFW7cJuRtD8NzW7l3VFVdJjJp3A7G1dq5bnXGnBjMYDYDhyXNezZof4feZZXzsHQ9m+11y4ccySXZ7Mhty2cvLWaJbpzVfRtzQqaUuJba/Pg7Ln+VelrIg6RJPWYW660HRBwkQSHz3IRlkWdszFIL/CtiHPtE8E1j8uLTd4XZfB7wSeH65zr0Rcvwtg7dxLMG8yGVW9NLhObKCTX8pJBP9D0Pw/eO/sjC7CQEGT0RaqUZPZKYe5AoL3itXzoCIUdyU2FgjV1qO4m4UiTUli9Gp1c8JOfVKYjXR5duvi7UceUfWlPVkHqlwEDlSvZNI1WZ2bOaKvLCSl2MR8FAbdfol2/XRVtwJHxAkVavtZ8zL5DxFWcSqrRXEmuPdQ2vFUsUHZYuCpFnMccF80pKGNocimYOsCc/wiYUYRF5t7Kh2Ok5YxMBb8BYvH8mLaDJ7aeXV2zPZu8ZdpPZBRq8HieHZp6DnEwaYRST48deNDe6HhTBfzlTs9h0hwT+ID6hB63SEjwcZr9rt/TFFQdWetVapplwriJzX0mqMITGZjvu7ccOErAbhF/kHS8YVKwpPPwwI1XqD+UD966w5KnrlgJD1C1tW8oDOJaFutZix4rIYOEXiUYzoUqjdV1EVfzm//VE3q/mRh+iyyQrwrT/zOPnIhcwhtMiMyMm+DIn+OroqgxQ9wWu47RvtFtpXlorUm0iFndSCMnbtlVq0MmF7NU9GbKb1yfiMQZm5LAPDmBjqF+J9f4nN3j0ip6sQ4HxHz5jLZtGkn8gqogJPiOxlQ9Qd3Kgs22iumpxzGgfwUhKgpQs/NQuP63+e16OZW/jX1ifvMIB74M2lLGb/bEb5U8ZIvxA9ZsjKDwAKUOCSCFaxaCIx3gXSzjpo21TF+hNpEP5cVbcr4qluU+635Jad4fxAln8J7BPz/3g5vcdCPvOL/WrdpsVG4RWl8ZiAQMCz/O8mK5piIay/BMQwWkXW9ygsw+BbvmsQl4YwLZ6eJqAMRt0UrzjYWUfLEYQN83mj0SZx7DClZyvDyrJBxTtXx3VcZEnfE09djb48Edq8oiN9hKvBIKVshXLo+oBcbDFRunwiMRdNGr9u'' WHERE "SECTION"=''COMPAGNON'' AND "NAME"=''CLE_PRIVEE'';'
+	);
+
+	// V39
+	// TGEDPARAM
+	if not GedParamExists('DROITS','INFOS_TECHNIQUES', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''INFOS_TECHNIQUES'', ''2'', 0, ''1'', NULL, ''Indique si Les informations techniques peuvent être affichées dans le client WEB'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+		);
+	if not GedParamExists('LICENCE','ANCIENNES_PERMISSIONS', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''LICENCE'', ''ANCIENNES_PERMISSIONS'', ''2'', 1, ''0'', NULL, ''Indique si on utilise les anciennes permissions définies dans la bib pour l''''utilisateur_bib (transition vers nouvelle gestion utilisateur NAS)'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);			'
+			);
+
+	
+	// V40
+
+	// On supprime les paramètres PANIERES_WEB (FK supprime les éventuels enfants)
+	ExecuteSQL(
+		'DELETE FROM TGEDPARAM WHERE SECTION=''LICENCE'' AND "NAME"=''PANIERES_WEB'';'
+		);
+	ExecuteSQL(
+		'DELETE FROM TGEDPARAM WHERE SECTION=''DROITS'' AND "NAME"=''PANIERES_WEB'';'
+		);
+	// Ajout de nouveaux paramètres
+	if not GedParamExists('REGLAGE','MODE_INSERTION', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''REGLAGE'', ''MODE_INSERTION'', ''2'', 0, ''0'', NULL, ''Indique si le script de réintégration ajoute les documents en mode insertion ou non'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	if not GedParamExists('REGLAGE','SMTP', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''REGLAGE'', ''SMTP'', ''12'', 0, NULL, NULL, ''id du serveur SMTP par défaut (type AlphaBlob) fait référence à un des gedparam de la section SMTP des gedparams standards du sous-domaine'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+
+	// Renommés entre différentes versions V40...
+	if GedParamExists('LICENCE','ABONNEMENT', '') Then
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET "NAME" = ''NOTIFICATION'' WHERE SECTION=''LICENCE'' AND "NAME"=''ABONNEMENT'';'
+			)
+	Else
+	Begin
+		if not GedParamExists('LICENCE','NOTIFICATION', '') Then
+			ExecuteSQL(
+				'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''LICENCE'', ''NOTIFICATION'', ''2'', 1, ''0'', NULL, ''Indique si le compte peut utiliser la fonctionnalité d''''abonnement'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+				);
+	End;
+	if GedParamExists('ABONNEMENT','ACTIF', '') Then
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION = ''NOTIFICATION'' WHERE SECTION=''ABONNEMENT'' AND "NAME"=''ACTIF'';'
+			)
+	Else
+	Begin
+		if not GedParamExists('NOTIFICATION','ACTIF', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''NOTIFICATION'', ''ACTIF'', ''2'', 0, ''0'', NULL, ''Indique que l''''abonnement est actif pour ce compte'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+	if GedParamExists('ABONNEMENT','MAIL_NOTIFICATION', '') Then
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION = ''NOTIFICATION'' WHERE SECTION=''ABONNEMENT'' AND "NAME"=''MAIL_NOTIFICATION'';'
+			)
+	Else
+	Begin
+		if not GedParamExists('ABONNEMENT','MAIL_NOTIFICATION', '') Then
+			ExecuteSQL(
+				'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''NOTIFICATION'', ''MAIL_NOTIFICATION'', ''2'', 0, ''0'', NULL, ''si oui et que ACTIF=oui, l''''utilisateur recevra un mail d''''alerte'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+				);
+	End;
+	if GedParamExists('ABONNEMENT','MAIL_MODELE', '') Then
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION = ''NOTIFICATION'' WHERE SECTION=''ABONNEMENT'' AND "NAME"=''MAIL_MODELE'';'
+			)
+	Else
+	Begin
+		if not GedParamExists('NOTIFICATION','MAIL_MODELE', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''NOTIFICATION'', ''MAIL_MODELE'', ''10'', 0, NULL, NULL, ''Contenu du mail de notification des abonnements'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+	if GedParamExists('ABONNEMENT','MATRICE', '') Then
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION = ''NOTIFICATION'' WHERE SECTION=''ABONNEMENT'' AND "NAME"=''MATRICE'';'
+			)
+	Else
+	Begin
+		if not GedParamExists('NOTIFICATION','MATRICE', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''NOTIFICATION'', ''MATRICE'', ''2'', 0, ''0'', NULL, ''si oui, la recherche ne renverra que les documents appartenant à une branche ayant dans sa matrice associée les items armés avec "Abonné" à oui'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+	if GedParamExists('ABONNEMENT','DECLENCHEUR', '') Then
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION = ''NOTIFICATION'' WHERE SECTION=''ABONNEMENT'' AND "NAME"=''DECLENCHEUR'';'
+			)
+	Else
+	Begin
+		if not GedParamExists('NOTIFICATION','DECLENCHEUR', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''NOTIFICATION'', ''DECLENCHEUR'', ''3'', 0, ''0'', NULL, ''Évènement pris en compte par défaut pour la date de référence des abonnement ' + CRLF + '0:Date de dernière connexion' + CRLF + '1:Date de l’avant dernière synchro réussie' + CRLF + '0:Date de dernière connexion' + CRLF + '2:Date définie pour le compte (autre gedparam associé au compte ?)'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	End;
+	
+	// Ajouté puis supprimé entre 2 versions 40
+	if GedParamExists('NOTIFICATION','DATE_MODIFICATION', '') Then
+		ExecuteSQL(
+			'DELETE FROM TGEDPARAM WHERE SECTION=''NOTIFICATION'' AND "NAME"=''DATE_MODIFICATION'';'
+			);
+
+	if not GedParamExists('DROITS','EDITER_SCRIPT', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''EDITER_SCRIPT'', ''2'', 0, ''0'', NULL, ''L''''utilisateur peut éditer et exécuter des scripts'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	if not GedParamExists('DROITS','GERER_DICO_PARAMS', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''GERER_DICO_PARAMS'', ''2'', 0, ''0'', NULL, ''L''''utilisateur peut gérer (créer/modifier/supprimer) les paramètres standards du sous-domaine (NUMERISATION, SMTP, etc..)'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);'
+			);
+	if not GedParamExists('DROITS','AIDE', '') Then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TGEDPARAM ( SECTION, NAME, "TYPE", "CLASS", DEFAULTVALUE, DEFAULTVALUEBLB, "COMMENT", TOWNER_ID, TLIBRARY_ID, PROTECTION, MODIF_DATE) VALUES (''DROITS'', ''AIDE'', ''2'', 0, ''1'', NULL, ''Accès au lien "Aide et Support" dans le client WEB'',NULL, NULL, 1, CURRENT_TIMESTAMP) MATCHING (SECTION,NAME,TOWNER_ID,TLIBRARY_ID);			'
+			);
+
+	// Nouveux DOMPARAMS
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''GEDPARAM_SECTIONS_OWNER_CREATE''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM (SECTION,NAME,"TYPE","VALUE",VALUEBLB,"COMMENT",PROTECTION) VALUES (''DOMAIN'',''GEDPARAM_SECTIONS_OWNER_CREATE'',''1'',NULL,''NUMERISATION;TRAITEMENT;SMTP;SCRIPT;SCRIPT_DOSSIER;SCRIPT_ACTION;TAMPON;RECHERCHE;MATRICES'',''Liste des sections GEDPARAM (séparées par DOMPARAM:DOMAIN/MDF_FIELD_SEP) pour lesquelles la création pour un sous-domaine est autorisée sans restriction (évaluée par la procédure de création de GEDPARAM)'',1) MATCHING (SECTION,NAME);'
+			);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''GEDPARAM_SECTION_OWNER''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM (SECTION,NAME,"TYPE","VALUE",VALUEBLB,"COMMENT",PROTECTION) VALUES (''DOMAIN'',''GEDPARAM_SECTION_OWNER'',''1'',''SOUS-DOMAINE'',NULL,''Nom de la section utilisée pour les GEDPARAMS créés pour un sous-domaine'',0) MATCHING (SECTION,NAME);'
+			);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''GEDPARAM_SECTION_LIB''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM (SECTION,NAME,"TYPE","VALUE",VALUEBLB,"COMMENT",PROTECTION) VALUES (''DOMAIN'',''GEDPARAM_SECTION_LIB'',''1'',''BIBLIOTHEQUE'',NULL,''Nom de la section utilisée pour les GEDPARAMS créés pour une bilbiothèque'',0) MATCHING (SECTION,NAME);'
+			);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''PARAM_EQUIV_NULL''') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM (SECTION,NAME,"TYPE","VALUE",VALUEBLB,"COMMENT",PROTECTION) VALUES (''DOMAIN'',''PARAM_EQUIV_NULL'',''3'',''-9'',NULL,''Valeur représentant une valeur NULL pour des paramètre représentant un élément non affecté dans les tables dans les appels de Procédures stockées'',0) MATCHING (SECTION,NAME);'
+			);
+	if not RecordExists('SELECT "VALUE" FROM TDOMPARAM WHERE "SECTION"=''DOMAIN'' AND "NAME"=''NAS_URL''') then
+		ExecuteSQL(
+			'	UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME","TYPE","VALUE","VALUEBLB","COMMENT","PROTECTION") VALUES (''DOMAIN'',''NAS_URL'',''1'',NULL,NULL,''URL interne d''''accès à ce domaine Novaxel (utilisé par le gestionnaire de script pour accéder localement au domaine)'',1) MATCHING("SECTION","NAME");'
+			);
+
+	
+	// TODO : à partir de la V40, voir s'il faut garder ces MAJ ensuite...
+	if DOMAIN_FINALVER=40 then
+	Begin
+		// MAJ GEDPARAM Bibliothèque
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET CLASS=4 WHERE SECTION IN(''NUMERISATION'',''TRAITEMENT'',''SMTP'',''SCRIPT'',''SCRIPT_DOSSIER'',''SCRIPT_ACTION'',''TAMPON'',''RECHERCHE'');'
+			);
+
+		// MAJ des GEDPARAM OWNER/LIB pour respect des sections corresondantes	
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION=(SELECT "VALUE" FROM TDOMPARAM WHERE SECTION=''DOMAIN'' AND "NAME"=''GEDPARAM_SECTION_OWNER'') WHERE TOWNER_ID IS NOT NULL AND TLIBRARY_ID IS NULL AND SECTION NOT IN (''NUMERISATION'',''TRAITEMENT'',''SMTP'',''SCRIPT'',''SCRIPT_DOSSIER'',''SCRIPT_ACTION'',''TAMPON'',''RECHERCHE'',''MATRICES'');'
+			);
+		ExecuteSQL(
+			'UPDATE TGEDPARAM SET SECTION=(SELECT "VALUE" FROM TDOMPARAM WHERE SECTION=''DOMAIN'' AND "NAME"=''GEDPARAM_SECTION_LIB'') WHERE TOWNER_ID IS NOT NULL AND TLIBRARY_ID IS NOT NULL  AND SECTION NOT IN (''NUMERISATION'',''TRAITEMENT'',''SMTP'',''SCRIPT'',''SCRIPT_DOSSIER'',''SCRIPT_ACTION'',''TAMPON'',''RECHERCHE'',''MATRICES'');'
+			);
+	End;
+
+
+
+	
+End;
+
+
+Procedure MAJ_DATAS();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_DATAS';
+
+	LogAction ('Mise à jour des datas dans les tables diverses',Caller,LOG_INFO);
+
+	// V36
+	// Ajout TCONTYPE
+	if not RecordExists('SELECT "NAME" FROM TCONTTYPE WHERE "NAME"=''Marketing'';') then
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TCONTTYPE ("NAME") VALUES(''Marketing'') MATCHING ("NAME");'
+	);
+
+
+End;
+
+
+// MAJ Des exceptions
+Procedure MAJ_EXCEPTIONS();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_EXCEPTIONS';
+
+	LogAction ('Mise à jour des exceptions...',Caller,LOG_INFO);
+
+	// V31 : Ajout d'exception
+	if not ExceptionExists('EX_DELCOLOVERFLOW') then
+		MAJMeta(
+			'CREATE EXCEPTION EX_DELCOLOVERFLOW ''50901:Impossible de marquer cet enregistrement pour suppression car cela entrainerait un dépassement de capacité d''''une colonnes d''''index (ajout des tag suppression)'';'
+		);
+	if not ExceptionExists('EX_NOTABLEORCOL') then
+		MAJMeta(
+			'CREATE EXCEPTION EX_NOTABLEORCOL ''50900:La table et/ou la colonne n''''existe pas dans la base de données'';'
+		);
+	if not ExceptionExists('EX_BADOWNER') then
+		MAJMeta(
+			'CREATE EXCEPTION EX_BADOWNER ''50902:Le Propriétaire passé en paramètre n''''est pas celui de la Bibliothèque'';'
+		);
+	if not ExceptionExists('EX_BADACCESSMODE') then
+		MAJMeta(
+			'CREATE EXCEPTION EX_BADACCESSMODE ''50903:La valeur passée pour le mode d''''accès est incorrecte'';'
+		);
+	if ExceptionExists('EX_ERRGEN') then
+		MAJMeta(
+			'DROP EXCEPTION EX_ERRGEN;'
+		);
+
+	// V32
+	if not ExceptionExists('EX_GEDGROUPLIB_EXISTS') then
+		MAJMeta(
+			'CREATE EXCEPTION EX_GEDGROUPLIB_EXISTS ''50340:Association Groupe d''''utilisateur GED/Bibliothèque déjà existante'';'
+		);
+	if not ExceptionExists('EX_NOGEDGROUPLIB') then
+		MAJMeta(
+			'CREATE EXCEPTION EX_NOGEDGROUPLIB ''Association Groupe d''''utilisateur GED/Bibliothèque inexistante dans la table TGEDGROUPLIB'';'
+		);
+	if ExceptionExists('EX_NOGEDGROUP') then
+		MAJMeta(
+			'ALTER EXCEPTION EX_NOGEDGROUP ''50222:Groupe d''''Utilisateur GED non visible/modifiable (lui-même ou le propriétaire rattaché) ou inexistante'';'
+		);
+
+	// V33 (modification texte)
+	if ExceptionExists('EX_NOGEDGROUP') then
+		MAJMeta(
+			'ALTER EXCEPTION EX_GEDGROUP_INUSE ''50515:Le Groupe d''''utilisateur GED ne peut pas être supprimé car il est utilisé par ailleurs'';'
+		)
+	Else
+	Begin
+		MAJMeta(
+			'CREATE EXCEPTION EX_GEDGROUP_INUSE ''50515:Le Groupe d''''utilisateur GED ne peut pas être supprimé car il est utilisé par ailleurs'';'
+		);
+		ExecuteSQL(
+			'COMMENT ON EXCEPTION EX_GEDGROUP_INUSE IS ''Groupe utilisé, donc ne peut pas être modifié (violation FK Cascade)'';'
+		);
+	End;
+
+	// 40
+	if not ExceptionExists('EX_STORAGE_EXISTS') then
+	Begin
+		MAJMeta(
+			'CREATE EXCEPTION EX_STORAGE_EXISTS ''50315:Le paramètre STORAGE spécifié existe déjà pour la même section et le même propriétaire (ou c''''est un paramètre global)'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON EXCEPTION    EX_STORAGE_EXISTS IS ''Le paramètre STORAGE spécifié existe déjà pour la même section et le même propriétaire dans la table TSTORAGE (violation de la règle d''''unicité de la table)'';'
+			);
+	End;
+	if not ExceptionExists('EX_NOSTORAGE') then
+	Begin
+		MAJMeta(
+			'CREATE EXCEPTION EX_NOSTORAGE ''50230:Le(s) paramètre(s) STORAGE spécifié(s) n''''existe(nt) pas'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON EXCEPTION EX_NOSTORAGE IS ''Le paramètre STORAGE spécifié n''''existe pas dans la table TSTORAGE'';'
+			);
+	End;
+	if not ExceptionExists('EX_GEDPARAM_SECTION_KO') then
+	Begin
+		MAJMeta(
+			'CREATE EXCEPTION EX_GEDPARAM_SECTION_KO ''50905:La section utilisée n''''est pas autorisée pour la création d''''un paramètre GED de type "sous-domaine" ou "bibliothèque"'';'
+			);
+		ExecuteSQL(
+			'COMMENT ON EXCEPTION    EX_GEDPARAM_SECTION_KO IS ''La création d''''un GEDPARAM nécessite l''''utilisation d''''une section spécifique (TDOMPARAM:DOMAIN/GEDPARAM_SECTION_OWNER ou TDOMPARAM:DOMAIN/GEDPARAM_SECTION_LIB  ou être autorisée par TDOMPARAM:DOMAIN/GEDPARAM_SECTIONS_OWNER_CREATE'';'
+			);
+	End;
+
+
+End;
+
+// MAJ Des domains
+Procedure MAJ_DOMAINS();
+var
+	Caller:String;
+Begin
+	Caller:='MAJ_DOMAINS';
+
+	LogAction ('Mise à jour des domaines...',Caller,LOG_INFO);
+
+	// V35
+	if DomainExists('SYNC_MAIL') then
+		MAJMeta(
+			'ALTER DOMAIN SYNC_MAIL DROP CONSTRAINT;'
+		);
+
+End;
+
+var
+	Caller:String;
+
+begin
+	Caller:='maj_domain';
+
+
+	// Récupération et remplacement des paramètres passés en ligne de commande
+	// chemin par défaut de la base domain
+	//DataBasePath:=getURLDatabase('DOMAIN');
+	// Chemin par défaut du Fichier SQL contenant les procédures stockés
+	proc_DBDef:=PROC_SQL_DEFPATH;
+
+	SetExitCode(0);
+
+
+	Try
+
+		// Récupération des paramètres, Init Variables globales, Vérif accès DB, etc...
+		If Not GetParamsMAJ('DOMAIN') then exit;
+
+		CurVer:=GetDomainVersion();
+
+		LogAction('Vérification de la version en cours de la base domain : ' + Int64ToStr(CurVer),Caller,LOG_INFO);
+
+		if (CurVer<DOMAIN_INITIALVER) or (CurVer>DOMAIN_FINALVER) then
+			RaiseException(erCustomError,'La version actuelle de la base de données (' + Int64ToStr(CurVer) + ') n''est pas supportée par cette procédure (version minimale prise en charge : ' + Int64ToStr(DOMAIN_INITIALVER) + ' ; version finale/maximale prise en charge : ' + Int64ToStr(DOMAIN_FINALVER) + ') ; merci de contacter votre service technique');
+
+		if BackupDB then
+			DBBackup(db, DOMAIN_FINALVER)
+		Else
+			LogAction('Option nobackup passée, on continue sans effectuer de sauvegarde de la version en cours',Caller,LOG_WARNING);
+
+		//1°) Purge des procédures stockées
+		PurgeProcStock;
+		
+		//3°) Générators
+
+		// MAJ des domains (position à valider : avant/après table ???)
+		MAJ_DOMAINS;
+
+		// Structures des tables...
+		MAJ_GLOBALE; // Modif de structures "légères"
+		
+		MAJ_TOWNER;
+
+		MAJ_TCONTTYPE;
+
+		MAJ_TCONTACT;
+
+		MAJ_TFBSERVER;
+
+		MAJ_TLIBRARY;
+
+		MAJ_TGEDGROUP;
+
+		MAJ_TGEDUSER;
+
+		MAJ_TGEDGROUPLIB;
+
+		MAJ_TGEDPARAMS;
+
+		MAJ_TSTORAGE;
+
+		// MAJ des paramètres...
+		MAJ_PARAMS;
+
+		// MAJ des autres tables...
+		MAJ_DATAS;
+
+		// Housekepping Index
+		RecreateIndex;
+
+		// On ne purge pas les triggers avant, en cas d'insertion de datas...
+		PurgeTriggers;
+
+		// MAJ des Exceptions
+		MAJ_EXCEPTIONS;
+
+		//3°) Mise à jour des prockstock (atomique) - l'existance du fichier est testé en getparams...
+		if not RunSQLFile(proc_DBFile) then
+		Begin
+			SetExitCode(1);
+			RaiseException(erCustomError,
+				'Erreur lors de l''application du script de recréation des procédures + Triggers + vues "' + proc_DBFile + '"'
+			);
+		End;
+
+
+		//4°) MAJ Version BD domain (last version)
+		LogAction('Mise à jour du N° de version de la base : ' + Int64ToStr(DOMAIN_FINALVER),Caller,LOG_INFO);
+		ExecuteSQL(
+			'UPDATE OR INSERT INTO TDOMPARAM ("SECTION","NAME", "VALUE") ' + 
+				'VALUES(''DOMAIN'',''VERSION'',''' + Int64ToStr(DOMAIN_FINALVER) + ''') ' + 
+				'MATCHING ("SECTION","NAME");'
+		);
+
+		msg := 'La base de données "' + db.databasename +'" a bien été mise à jour en version "' + Int64ToStr(DOMAIN_FINALVER) + '"';
+
+
+	Except
+		// Si aucun code de sortie défini, on n'est crée un...
+		if ExitCode=0 then SetExitCode(1);
+		msg := 'L''erreur fatale suivante s''est produite :' + CRLF + '	' + ExceptionParam;
+
+	Finally
+		LogAction(msg,Caller,iif(ExitCode=0, LOG_INFO, LOG_ERROR));
+		FinMAJ(msg);
+		FreeRes;
+	
+End;
+end.
