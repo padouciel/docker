@@ -42,7 +42,8 @@ RUN	mkdir -p /opt/novaxel/novaappserver && \
 	rm -f /novaappserver.tar.gz && \
 	mkdir -p /opt/novaxel/htdocs && \
 	cd /opt/novaxel/htdocs && \
-	7za e -y /www_2.8.4.21_NAS2.6.9.0_APP1.46.6_BASE_V40.7z && \
+	7za x -y /www_2.8.4.21_NAS2.6.9.0_APP1.46.6_BASE_V40.7z && \
+	chmod -R a+rX /opt/novaxel/htdocs && \
 	rm -f /www_2.8.4.21_NAS2.6.9.0_APP1.46.6_BASE_V40.7z
 	
 # Création utilisateur NAS
@@ -58,7 +59,7 @@ EXPOSE 8080/tcp
 # Volumes LOG
 VOLUME ["/var/log/novaappserver"]
 # Volume config (certs, etc...)
-VOLUME ["/et/opt/novaappserver"]
+VOLUME ["/etc/opt/novaappserver"]
 
 # Droits d'écriture sur le répertoire temp pour l'utilisateur système NAS
 RUN	mkdir -p /opt/novaxel/htdocs/tmp && \
@@ -66,7 +67,16 @@ RUN	mkdir -p /opt/novaxel/htdocs/tmp && \
 
 COPY conf/ /etc/opt/novaappserver/
 
+# Script de création de DB
+COPY sql/ /opt/novaxel/sql
+
+# Path DB Domain et DB Cloud
+# Pour que cela fonctionne correctement, il faut lancer le container avec less options "--link fbserver --volumes-from fbserver" et que le container fbserver soit lancé avec "-v /srv/firebird:/HostPathToDB" pour la persistence (ou équivalent)
+ENV 	PATH_DB_DOMAIN="domain" \
+	PATH_DB_CLOUD="cloud"
+
 # TODO
 # ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
-ENTRYPOINT ["/bin/bash"]
+COPY entrypoint.sh /opt/novaxel/
+ENTRYPOINT ["/opt/novaxel/entrypoint.sh"]
 
