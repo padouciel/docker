@@ -23,5 +23,4 @@ RUN	mkdir -p /opt && \
 	echo "PATH=${PATH}:/opt/novaxel/novatools:/opt/firebird/bin" >> $HOME/.bashrc
 	
 # TODO
-# ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
 ENTRYPOINT ["/bin/bash"]

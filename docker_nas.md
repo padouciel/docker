@@ -51,3 +51,9 @@ docker pull registry
 
 Voir [installation serveur](#environnement-serveur-dev)
 
+Suppression des images temporaires
+docker rmi $(docker images --filter "dangling=true" -q)
+
+
+## Ressources
+http://www.luiselizondo.net/a-production-ready-docker-workflow/
