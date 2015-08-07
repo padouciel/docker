@@ -40,6 +40,6 @@ COPY udf/* /var/lib/firebird/system/udf/
 
 EXPOSE 3050/tcp
 
-#USER firebird:firebird
+USER firebird:firebird
 
 ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
