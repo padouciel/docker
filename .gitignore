@@ -1,3 +1,4 @@
 # On ne diffuse pas les tar.gz NAS (closed source)
+*.tgz
 *.tar.gz
 *.7z
