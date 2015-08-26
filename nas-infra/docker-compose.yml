@@ -6,10 +6,15 @@ nas:
   links: 
     - fbserver
   volumes_from: 
-    - fbserver
+    - dc
 
 fbserver:
 #  build: ../firebird
-  volumes: 
-    - /var/lib/firebird:/srv/firebird
   image: "padouciel/firebird"
+  volumes_from: 
+    - dc
+
+dc:
+  volumes: 
+    - /var/lib/firebird:/srv/database
+
