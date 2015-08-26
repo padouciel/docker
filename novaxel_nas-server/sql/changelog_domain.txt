@@ -1,0 +1,1152 @@
+﻿Version 40 :
+
+1) Gestion Paramètres
+
+- GEDPARAM supprimés
+	LICENCE/PANIERES_WEB supprimé (dans toutes les tables GEDPARAM) pour l'instant (non utilisé fonctionnellement)
+	DROITS/PANIERES_WEB supprimée
+- GEDPARAM modifiés :
+	SECTION "NOVAXELCLOUD" renommé en "COMPAGNON"
+	DROITS/PILOTAGE_NOVAXELCLOUD => DROITS/COMPAGNON
+- GEDPARAM Ajouté :
+    REGLAGE/MODE_INSERTION
+    REGLAGE/SMTP
+    LICENCE/NOTIFICATION
+    NOTIFICATION/ACTIF
+    NOTIFICATION/MAIL_NOTIFICATION
+    NOTIFICATION/MAIL_MODELE
+    NOTIFICATION/MATRICE
+	NOTIFICATION/DECLENCHEUR
+	DROITS/EDITER_SCRIPT
+	DROITS/GERER_DICO_PARAMS
+	DROITS/AIDE
+- GEDPARAM MAJ :
+    NOVAXELCLOUD/CERTIFICAT
+    NOVAXELCLOUD/CLE_PRIVEE
+
+- DOMPARAM ajoutés :
+	DOMAIN/GEDPARAM_SECTIONS_OWNER_CREATE (sections OK pour création GEDPARAM sous-domaine/bibliothèque)
+	DOMAIN/GEDPARAM_SECTION_OWNER
+	DOMAIN/GEDPARAM_SECTION_LIB
+	DOMAIN/PARAM_EQUIV_NULL (valeur représentant la recherche de valur NULL en paramètre d'entrée PS)
+	DOMAIN/NAS_URL
+
+- MAJ GEDPARAM existants avec les sections correspondantes aux GEDPARAM_SECTION_OWNER/GEDPARAM_SECTION_LIB correspondantes
+
+2) Divers
+	- Modification des colonnes MODIF_DATE (toutes tables) afin de ne plus utiliser 'NOW' en default value
+
+	- Modification indexes START, END, (TOWNER_ID,TLIBRARY_ID,TIME_END) sur TLOGSYNC pour tri en DESC par défaut
+	- PS GET_LOGSYNCS modifiée en ce sens aussi
+
+	- GET_LOGSYNCS : ajout de I_MAX_ROWS pour limiter le nombre de lignes en sortie...
+
+	- PS GET_GEDPARAMOWNERS_FOR_OWNER : ajout de I_TGEDPARAM_CLASS en entrée pour pouvoir filtrer sur les classes en appel
+
+	- Ajout de vérification de section dans PS SET_GEDPARAM pour les GEDPARAM dico sous-domaine/bibliothèque :
+		- Si I_TOWNER_ID est fourni, la section doit être celle identifié par TDOMAIN:GEDPARAM_SECTION_OWNER ("SOUS-DOMAINE")
+		- Si I_LIBRARY_ID est fourni, la section doit être celle identifié par TDOMAIN:GEDPARAM_SECTION_LIB ("BIBLIOTHEQUE")
+		- Nouvelle Excption levée (plus explicite) : EX_GEDPARAM_SECTION_KO:50905
+
+	- Ajout TGEDPARAM.MODIF_DATE (+ trigger MAJ) avec impact sur les PS (ajout de GEDPARAM_MODIF_DATE en sortie)
+		- La plupart des PS impactées par la factorisation des GEDPARAMS (cf. au cas/cas ci-dessous)
+
+	- Systématisation du principe de recherche de valeur explicite NULL dans les paramètres d'entrée de PS GET_XXXX :
+		- Si besoin (ie. au cas/cas)
+		- Les paramètres concernés utilisent le principe suivant :
+			* valeur > 0 : on recherche spécifquement un ID dans la requête sous-jacente (ie WHERE ID=XXX)
+			* valeur = 0 : On ne tient pas compte de l'élément dans la requête sous-jacente (ie pas de critère sur la colonne cible en WHERE)
+			* valeur = TDOMPARAM:DOMAIN/PARAM_EQUIV_NULL : On cherche les éléments non associés (ie WHERE ID IS NULL)
+	- PS impactées :
+
+GET_GEDPARAMS
+	I_TGEDPARAM_TOWNER_ID
+	I_TGEDPARAM_TLIBRARY_ID
+
+GET_GEDPARAM_FOR_NAME
+	I_TGEDPARAM_TOWNER_ID
+	I_TGEDPARAM_TLIBRARY_ID
+
+GET_STORAGES
+	I_TSTORAGE_TGEDUSER_ID
+	I_TSTORAGE_TLIBRARY_ID
+
+DEL_STORAGES
+	I_TSTORAGE_TGEDUSER_ID
+	I_TSTORAGE_TLIBRARY_ID
+
+GET_GEDUSERS_COUNT_FOR_OWNER
+	I_TGEDGROUP_ID
+
+GET_GEDUSERS_FOR_OWNER
+	I_TGEDGROUP_ID
+
+GET_PROFILES_FOR_OWNER (Remarque : cette PS appliquait déjà des filtrages si valeur à 0, mais non correpondants à celle systématisée, donc adaptation)
+	I_TLIBRARY_ID
+	I_TGEDUSER_ID
+
+	- Modification TLIBRARY.GUID : modification de type VARCHAR(40) => VARCHAR(255) (table + PS utilisant cette colonne)
+	- Ajout TLIBRARY.VERSION INTEGER : Version Novaxel de la bibliothèque + PS :
+Ajout en sortie :
+	GET_LIBRARIES
+	GET_LIBRARIES_FOR_FBSERVER
+	GET_LIBRARIES_FOR_GEDGROUP
+	GET_LIBRARIES_FOR_GEDUSER
+	GET_LIBRARIES_FOR_OWNER
+	GET_LIBRARY_INFOS
+Ajout en entrée
+	SET_LIBRARY_INFOS
+
+
+
+3) Factorisation GEDPARAM
+	- Suppression des colonnes "SECTION", "NAME", "TYPE", "COMMENT" des tables TGEDPARAMOWNER, TGEDPARAMPROF, TGEDPARAMUSER
+	- Ajout d'une FK TGEDPARAM_ID à ces tables pointant sur TGEDPARAM.ID
+	- Les PS SET_GEDPARAMXXXX renvoient maintenant la plupart des informations de TGEDPARAM pour initialiser les objets scripts plus facilement
+
+	- Lors de la factorisation, si des GEDPARAM existent dans une table enfant, mais n'existent déjà plus en dico (TGEDPARAM), ils sont copiés dans une table temporaire "Z_PARAM_NOT_EXISTS_IN_TGEDPARAM" (à supprimer lors d'une prochiane release)
+	- Ça permet, éventuellement, de retrouver des choses après coup. Je ne sais pas si on va garder ce principe finalement ou pas...
+	- Par exemple, dans une copie de la base de prod, on trouve 395 paramètres orphelins dans les tables enfants (qui seront donc supprimés du fait de la factorisation puisque plus de parent en TGEDPARAM).
+
+	- PS impactées par ces modifications :
+
+DEL_GEDPARAMOWNER
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+
+GET_GEDPARAMOWNER
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Changement de nom en sortie :
+        GEDPARAM_SECTION
+        GEDPARAM_NAME
+        GEDPARAM_TYPE
+        GEDPARAM_COMMENT
+    Ajout en sortie :
+        GEDPARAM_ID
+        GEDPARAM_CLASS
+        GEDPARAM_PROTECTION
+        GEDPARAM_DATE_MODIF
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+		GEDPARAM_DEFAULTVALUE
+
+GET_GEDPARAMOWNER_VALUEBLB
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Changement de nom en sortie :
+        GEDPARAM_TYPE
+    Ajout en sortie :
+        GEDPARAM_ID
+        GEDPARAM_CLASS
+        GEDPARAM_PROTECTION
+        GEDPARAM_DATE_MODIF
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+
+SET_GEDPARAMOWNER
+    Suppression de paramètres en entrée :
+        I_TGEDPARAMOWNER_TYPE
+        I_TGEDPARAMOWNER_COMMENT
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Ajout en sortie : ATTENTION : cette PS devient SELECTABLE (ie SELECT ... FROM au lieu de EXECUTE PROCEDURE)
+		OWNER_ID,
+		GEDPARAM_SECTION ,
+		GEDPARAM_NAME,
+		GEDPARAM_TYPE,
+		GEDPARAMOWNER_VALUE VARCHAR(100) CHARACTER SET UTF8,
+		GEDPARAMOWNER_VALUEBLB_FILLED BOOLEAN,
+		GEDPARAM_COMMENT VARCHAR(8190) CHARACTER SET UTF8,
+		GEDPARAMOWNER_MODIF_DATE VARCHAR(20) CHARACTER SET UTF8,
+		GEDPARAM_ID INTEGER,
+		GEDPARAM_CLASS INTEGER,
+		GEDPARAM_PROTECTION STATE,
+		GEDPARAM_MODIF_DATE VARCHAR(20) CHARACTER SET UTF8,	
+		GEDPARAM_OWNER_ID INTEGER,
+		GEDPARAM_LIBRARY_ID INTEGER,
+		GEDPARAM_DEFAULTVALUE
+		OWNER_STATE STATE
+		GEDPARAM_DEFAULTVALUE
+
+SET_GEDPARAMOWNER_VALUEBLB
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Ajout en sortie : ATTENTION : cette PS devient SELECTABLE (ie SELECT ... FROM au lieu de EXECUTE PROCEDURE)
+        GEDPARAMOWNER_MODIF_DATE 
+
+GET_GEDPARAMOWNERS_FOR_OWNER
+    Changement de nom en entrée :
+        I_TGEDPARAM_SECTION
+	Ajout en entrée
+		I_TGEDPARAM_CLASS : filtrage sur les class
+    Changement de nom en sortie :
+        GEDPARAM_SECTION
+        GEDPARAM_NAME
+        GEDPARAM_TYPE
+        GEDPARAM_COMMENT
+    Ajout en sortie :
+        GEDPARAM_ID
+        GEDPARAM_CLASS
+        GEDPARAM_PROTECTION
+        GEDPARAM_DATE_MODIF
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+		GEDPARAM_DEFAULTVALUE
+
+GET_GEDPARAMOWNER_MDF
+    Modification de la sortie (MDF)
+        SECTION;NAME;TYPE;VALUE;VALUEBLB_FILLED ==> SECTION;NAME;TYPE;VALUE;VALUEBLB_FILLED;GEDPARAM_ID;GEDPARAM_CLASS,GEDPARAM_PROTECTION,GEDPARAM_DEFAULTVALUE
+
+DEL_GEDPARAMPROF
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+
+GET_GEDPARAMPROF
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Changement de nom en sortie :
+        GEDPARAM_SECTION
+        GEDPARAM_NAME
+        GEDPARAM_TYPE
+        GEDPARAM_COMMENT
+    Ajout en sortie :
+        GEDPARAM_ID
+        GEDPARAM_CLASS
+        GEDPARAM_PROTECTION
+        GEDPARAM_DATE_MODIF
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+		GEDPARAM_DEFAULTVALUE
+		GEDPARAM_DEFAULTVALUE
+
+GET_GEDPARAMPROF_VALUEBLB
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Changement de nom en sortie :
+        GEDPARAM_TYPE
+    Ajout en sortie :
+        GEDPARAM_ID
+        GEDPARAM_CLASS
+        GEDPARAM_PROTECTION
+        GEDPARAM_DATE_MODIF
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+
+SET_GEDPARAMPROF
+    Suppression de paramètres en entrée :
+        I_TGEDPARAMPROF_TYPE
+        I_TGEDPARAMPROF_COMMENT
+
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Ajout en sortie : ATTENTION : cette PS devient SELECTABLE (ie SELECT ... FROM au lieu de EXECUTE PROCEDURE)
+		PROFILE_ID,
+		GEDPARAM_SECTION,
+		GEDPARAM_NAME,
+		GEDPARAM_TYPE,
+		GEDPARAMPROF_VALUE,
+		GEDPARAMPROF_VALUEBLB_FILLED,
+		GEDPARAM_COMMENT,
+		GEDPARAMPROF_MODIF_DATE,
+		OWNER_ID,
+		GEDPARAM_ID,
+		GEDPARAM_CLASS,
+		GEDPARAM_PROTECTION,
+		GEDPARAM_MODIF_DATE,	
+		GEDPARAM_OWNER_ID,
+		GEDPARAM_LIBRARY_ID,
+		GEDPARAM_DEFAULTVALUE
+
+SET_GEDPARAMPROF_VALUEBLB
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Ajout en sortie : ATTENTION : cette PS devient SELECTABLE (ie SELECT ... FROM au lieu de EXECUTE PROCEDURE)
+        GEDPARAMPROF_MODIF_DATE 
+
+GET_GEDPARAMPROFS_FOR_PROFILE
+    Changement de nom en entrée :
+        I_TGEDPARAM_SECTION
+    Changement de nom en sortie :
+        GEDPARAM_SECTION
+        GEDPARAM_NAME
+        GEDPARAM_TYPE
+        GEDPARAM_COMMENT
+    Ajout en sortie :
+        GEDPARAM_ID
+    Remarque : Les paramètres GEDPARAM_CLASS et GEDPARAM_PROTECTION étaient déjà présents pour cette PS
+        GEDPARAM_DATE_MODIF
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+		GEDPARAM_DEFAULTVALUE
+
+DEL_GEDPARAMUSER
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+
+GET_GEDPARAMUSER
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Changement de nom en sortie :
+        GEDPARAM_SECTION
+        GEDPARAM_NAME
+        GEDPARAM_TYPE
+        GEDPARAM_COMMENT
+    Ajout en sortie :
+        GEDPARAM_ID
+        GEDPARAM_CLASS
+        GEDPARAM_PROTECTION
+        GEDPARAM_DATE_MODIF
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+		GEDPARAM_DEFAULTVALUE
+
+GET_GEDPARAMUSER_VALUEBLB
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Changement de nom en sortie :
+        GEDPARAM_TYPE
+    Ajout en sortie :
+        GEDPARAM_ID
+        GEDPARAM_CLASS
+        GEDPARAM_PROTECTION
+        GEDPARAM_DATE_MODIF
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+
+SET_GEDPARAMUSER
+    Suppression de paramètres en entrée :
+        I_TGEDPARAMUSER_TYPE
+        I_TGEDPARAMUSER_COMMENT
+
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Ajout en sortie : ATTENTION : cette PS devient SELECTABLE (ie SELECT ... FROM au lieu de EXECUTE PROCEDURE)
+		GEDUSER_ID
+		LIBRARY_ID
+		GEDPARAM_SECTION
+		GEDPARAM_NAME
+		GEDPARAM_TYPE
+		GEDPARAMUSER_VALUE
+		GEDPARAMUSER_VALUEBLB_FILLED
+		GEDPARAM_COMMENT
+		GEDPARAMUSER_MODIF_DATE
+		OWNER_ID
+		FBSERVER_ID
+		GEDPARAM_ID
+		GEDPARAM_CLASS
+		GEDPARAM_PROTECTION
+		GEDPARAM_MODIF_DATE
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+		GEDPARAM_DEFAULTVALUE
+
+SET_GEDPARAMUSER_VALUEBLB
+    Suppression de paramètres en entrée :
+        I_TGEDPARAM_SECTION
+        I_TGEDPARAM_NAME
+	Remplacés par :
+		I_TGEDPARAM_ID
+    Ajout en sortie : ATTENTION : cette PS devient SELECTABLE (ie SELECT ... FROM au lieu de EXECUTE PROCEDURE)
+        GEDPARAMUSER_MODIF_DATE 
+
+GET_GEDPARAMUSERS_FOR_USER
+    Changement de nom en entrée :
+        I_TGEDPARAM_SECTION
+    Changement de nom en sortie :
+        GEDPARAM_SECTION
+        GEDPARAM_NAME
+        GEDPARAM_TYPE
+        GEDPARAM_COMMENT
+    Ajout en sortie :
+        GEDPARAM_ID
+        GEDPARAM_CLASS
+        GEDPARAM_PROTECTION
+        GEDPARAM_DATE_MODIF
+		GEDPARAM_OWNER_ID
+		GEDPARAM_LIBRARY_ID
+		GEDPARAM_DEFAULTVALUE
+
+
+4) TSTORAGE :
+
+    - Création table TSTORAGE
+
+    - PS ajoutées :
+
+SET_STORAGE
+    - Pas de retour (EXECUTE PROCEDURE)
+
+GET_STORAGES
+    - Filtrage "cumulatif" par les paramètres d'entrée (dans l'ordre de la clé "TSTORAGE_UNI")
+    - Il y a des cas où on accrochera pas l'index "TSTORAGE_UNI": il faut que l'on voit si on rajoute des index...
+    - Pour les paramètres I_TSTORAGE_TGEDUSER_ID et I_TSTORAGE_TLIBRARY_ID on peut (cf échange de mail joints sur ce sujet) :
+        * Si > 0, filtre sur l'ID concerné
+        * Si = 0, on ne tient pas compte en filtre
+        * Si = -1, on recherche les records qui ne sont PAS associés (ie pour lesquels on trouve NULL dans la colonne correspondante TSTORAGE)
+
+DEL_STORAGES
+    - Pas de retour (EXECUTE PROCEDURE)
+    - Filtrage par paramètre en entrée suivant les mêmes principes que GET_STORAGES
+    - Suppression physique des record...
+
+	- Pour mémoire, les PS PURGE_GEDUSERS, PURGE_LIBRARIES et PURGE_OWNERS ont été modifiées pour nettoyer TSTORAGE.
+	- Ceci n'a aucun impact sur les paramètres en entrées et sortie de ces PS (si tant est qu'on les utilise en NAS ?)
+
+    - 2 nouvelles exceptions :
+CREATE EXCEPTION EX_STORAGE_EXISTS '50315:Le paramètre STORAGE spécifié existe déjà pour la même section et le même propriétaire (ou c''est un paramètre global)';
+CREATE EXCEPTION EX_NOSTORAGE '50230:Le(s) paramètre(s) STORAGE spécifié(s) n''existe(nt) pas';
+
+
+
+Version 39 (02/03/2015)
+
+ 1) Gestion des dates de modification des enregistrements (colonnes "MODIF_DATE" des tables identifiées plus loin) :
+
+- Les triggers ne mettent plus "MODIF_DATE" à jour automatiquement
+    * Tous les triggers concernés ont été modifiés afin de ne plus intervenir que sur l'ajout (plus "INSERT OR UPDATE")
+
+- Ce sont les PS "SET_XXX_INFOS" qui en sont chargées
+
+- La démarche retenue pour ces PS (voir ci-dessous pour le détail des PS impactées) est la suivante :
+    * Ajout d'un paramètre en entrée "I_TXXX_NO_MODIF_DATE" (où XXX représente la table sous-jacente) de type BOOLEAN à Faux par défaut
+    * Si ce paramètre est passé à 0 (False), ou non passé, la colonne "MODIF_DATE" de la table sous-jacente est mise à jour (cas le plus courant)
+    * Si ce paramètre est passé à 1 (True), la colonne "MODIF_DATE" de la table sous-jacente n'est PAS mise à jour (donc l'enregistrement garde la valeur en cours pour "MODIF_DATE")
+    * Pour toutes les PS impactés, ce paramètre est situé en dernière position des paramètres de MAJ (ie. avant le premier paramètre de STATE)
+    * En mode création (paramètre "I_TXXX_ID=0"), les colonnes "MODIF_DATE" sont mise à jour inconditionnellement (ce paramètre n'est pas évalué)
+
+- PS et donc tables sous jacentes et colonnes "MODIF_DATE" impactées :
+    * SET_OWNER_INFOS : ajout de paramètre "I_TOWNER_NO_MODIF_DATE"
+    * SET_OWNER_PASSWORD : Cas particulier  : met à jour inconditionnellement la MODIF_DATE sans paramètre ajouté à la PS (on considère qu'il s'agit toujours d'une MAJ fonctionnelle, à rediscuter)
+    * SET_CONTACT_INFOS : ajout de paramètre "I_TCONTACT_NO_MODIF_DATE"
+    * SET_GEDGROUP_INFOS : ajout de paramètre "I_TGEDGROUP_NO_MODIF_DATE"
+    * SET_GEDUSER_INFOS : ajout de paramètre "I_TGEDUSER_NO_MODIF_DATE"
+    * SET_GEDUSER_PASSWORD : Cas particulier  : met à jour inconditionnellement la MODIF_DATE sans paramètre ajouté à la PS (on considère qu'il s'agit toujours d'une MAJ fonctionnelle, à rediscuter)
+    * SET_LIBRARY_INFOS : ajout de paramètre "I_TLIBRARY_NO_MODIF_DATE"
+    * SET_PROFILE_INFOS : ajout de paramètre "I_TPROFILE_NO_MODIF_DATE"
+
+- Les PS de suppression logique ("DEL_XXXX") ne mettent PAS à jour les MODIF_DATE (on considère qu'il ne s'agit pas à proprement parler d'une MAJ, à rediscuter)
+
+- Les PS de récupération logique ("UNDEL_XXX) ne mettent PAS à jour les MODIF_DATE (on considère qu'il ne s'agit pas à proprement parler d'une MAJ, à rediscuter)
+
+- Cas particuliers (à rediscuter) :
+    * Les PS "SET_GEDPARAMXXX[_VALUEBLB]" (dont les tables sous-jacentes contiennent des colonnes "MODIF_DATE") n'ont PAS été prises en compte dans le cadre de cette démarche
+    * Tables sous-jacentes (et colonnes "MODIF_DATE") concernées :
+        TGEDPARAMOWNER
+        TGEDPARAMPROF
+        TGEDPARAMUSER
+    * Les valeurs des colonnes "MODIF_DATE" restent inconditionnellement  mise à jour par trigger pour ces tables
+    * A priori, si un paramètre (ou la valeur BLOB d'un paramètre) est ajouté/modifié dans une de ces tables, il s'agira toujours d'une mise à jour "fonctionnelle"
+
+
+2) PS de purge revue pour suppression de dépendances non prises en charge actuellement (TGEDGROUP par rapport à un OWNER)
+
+3) Paramètres :
+    - ajout de GEDPARAM DROITS/INFO_TECHNIQUES
+    - ajout de LICENCE/ANCIENNES_PERMISSIONS
+
+
+
+Version 38 (10/11/2014)
+
+ - Ajout des gedparam identifiés dans https://docs.google.com/document/d/1pDp0-ns2fpu46KKFtzH1Ss8moBBtFIFMDmXmC9J4rAM/edit?usp=sharing
+    * J'ai laissé en rouge pour plus de visibilité dans le document (je remettrai normal dès que l'on aura validé)
+
+- Ajout des domparams de gestion de type de document pour Aspose
+
+- "PILOTAGE_NOVAXELCLOUD" à FAUX par défaut (pour désactiver Websockets les sur la prochaine livraison).
+
+- Modification PS
+    * GET_GEDPARAMS : ajout de "I_TGEDPARAM_CLASS" en entrée (pour filtrage)
+    * GET_GEDPARAMPROFS_FOR_PROFILE : ajout de "I_TGEDPARAM_CLASS" en entrée (filtrage) et "GEDPARAM_CLASS", GEDPARAM_PROTECTION en sortie (Jean-Marc, j'ai, pour l'instant, laissé le "GEDPARAMPROF_TYPE" qui fait "foi" jusqu'à notre prochaine réflexion sur les gedparams et donc supprimé "GEDPARAM_TYPE" que tu avais sur les pré-versions ; si ça te pose problème, j'ai juste à décommenter...)
+
+
+
+Version 37 (10/10/2014)
+
+    * Ajout des GEDPARAM identifiés dans https://docs.google.com/document/d/1pDp0-ns2fpu46KKFtzH1Ss8moBBtFIFMDmXmC9J4rAM/edit?usp=sharing
+
+
+
+Version 36 (12/06/2015)
+
+ - Meta :
+    - ajout de TLIBRARY.SIZE_MB_ORG BIGINT (taille de la lib coté client de synchro, pour facturation)
+ 
+Le principe de calcul de ce cumul est le suivant :
+- Prise en compte des LIBRARIES facturables et non supprimées
+- Si TLIBRARY.ACCESS_MODE=2 (full SAAS => pas de synchro) : prise en compte de TLIBRARY.SIZE_MB (inconditionnellement)
+- Sinon (synchro possible), prise en compte de TLIBRARY.SIZE_MB_ORG (si > 0, ie présent, donc déjà synchro au moins une fois puisque c'est le procédure de synchro qui va mettre TLIBRARY.SIZE_MB_ORG à jour) ou de TLIBRARY.SIZE_MB (dans le cas contraire)
+
+- Data :
+TGEDPARAM :
+    - MAJ des valeurs des colonnes TGEDPARAM.TYPE de 16 vers 10 (modification de valeur de constante) (seuls les GEDPARAM "N1-6" étaient concernés)
+    - MAJ CONNEXION/FORCER_MOT_DE_PASSE et CONNEXION/BLOQUER_PARTAGE en section DROITS
+    - Ajout CONNEXION/ZXEGAL (mise à jour possible depuis l'ancienne version 36...)
+    - Ajout CONNEXION//M1->M5
+    - Ajout SYNCHRO/FORCESYNC_SANS_REINTEG (attention nouvelle section)
+    - MAJ DROITS/INFOS_UTILISATEUR : valeur par défaut VRAI => FAUX (pour gestion de la propagation des valeurs par défaut à venir)
+    - Ajout CONNEXION/MATRICE
+
+- PS :
+    - GET_PROFILES_FOR_OWNER accepte la valeur "-1" en entrée pour I_TGEDUSER_ID : Dans ce cas, la PS renvoie tous les profils liés à une bibliothèque (il faut donc que I_TLIBRARY_ID soit <> 0 pour que cette valeur I_TGEDUSER_ID=-1 soit utile et donc prise en compte)
+    - ajout de LIBRARY_SIZE_MB_ORG en sortie des PS suivantes (toujours à la même position, ie après "LIBRARY_LAST_SIZE_CHECK") :
+        * GET_ALL_LIBRARIES_FOR_GEDUSER
+        * GET_LIBRARIES
+        * GET_LIBRARIES_FOR_FBSERVER
+        * GET_LIBRARIES_FOR_GEDGROUP
+        * GET_LIBRARIES_FOR_GEDUSER
+        * GET_LIBRARIES_FOR_OWNER
+        * GET_LIBRARY_INFOS
+    - SET_LIBRARY_INFOS : ajout de I_TLIBRARY_SIZE_MB_ORG en entrée (toujours après I_TLIBRARY_LAST_SIZE_CHECK) 
+
+
+
+
+Version 35 (24/04/2014)
+
+- levée de contrainte sur le domain Firebird "SYNC_MAIL"
+- ajout du paramètre TDOMPARAM "SYNCHRO/EMAIL_ALERT" (cf. mail par ailleurs)
+- ajout d'une VIEW "GET_OWNERS_STATS'' (usage administratif/support interne)
+
+
+
+Version 34 (14/02/2014)
+
+ - Meta :
+    * Ajout d'un index sur TGEDUSER.STATE (oublié sur version précédente)
+
+
+- PS :
+
+- GET_CONTACTS_FOR_OWNER :
+    * optimisations internes pour performance
+    * aucune entrée/sortie modifiée => pas d'impact NAS
+
+- GET_GEDUSERS_COUNT_FOR_OWNER :
+- Entrée
+    * I_TOWNER_ID : Non obligatoire si I_TGEDGROUP_ID INTEGER > 0
+    * I_TGEDGROUP_ID : Filtre sur le groupe (0 : inutilisé, >0 : un groupe donné, -1 geduser non affecté à un groupe)
+    * I_TOWNER_STATE
+    * I_TGEDUSER_COUNT_STATE
+- Sortie
+    * OWNER_ID
+    * GEDGROUP_ID
+    * GEDUSERS_COUNT
+
+- GET_GEDUSERS_FOR_OWNER (attention remplace GET_GEDUSERS_FOR_OWNER_OR_GROUP de l'ancienne version qui n'existe donc plus)
+    * Optimisations internes
+    * À part le nom de PS, aucune modification à apporter au niveau du NAS sur les entrées/sorties...
+
+
+
+Version 33 (29/01/2014)
+
+- Correction PS "DEL_GEDGROUP" qui fait "le ménage" dans toutes les tables enfants (pas d'impact technique NAS et/ou clients divers)
+- Correction du message de l'exception levée si un groupe ne peut pas être supprimé (mais cela ne devrait plus arriver), code erreur non modifié => pas d'impact NAS
+- Ajout des derniers TGEDPARAM identifiés (cf. https://docs.google.com/document/d/1pDp0-ns2fpu46KKFtzH1Ss8moBBtFIFMDmXmC9J4rAM/edit#)
+
+
+Version 33 (06/01/2014)
+
+ Tables :
+- TGEDGROUP : ajout des colonnes
+    * TYPE SMALLINT NULL Ok (+ index) : Type de groupe : MAJ des actuels à 2 inconditionnellement...
+    * TPROFILE_ID INTEGER : NULL Ok: FK PROFILE : Profil associé à un groupe
+    * COMMENT : VARCHAR(8164)
+    * CREATE_DATE Timestamp
+    * MODIF_DATE TimeStamp
+    * Modification des triggers pour MAJ des dates en Ajout/update
+- ajout TGEDUSER.TGEDGROUP_ID (INTEGER) NULL Ok : FK GEDGROUP Groupe primaire d'un utilisateur
+- Création TGEDGROUPLIB : Association Groupes/Bibliothèques
+    * TGEDGROUP_ID (INTEGER) NOT NULL : FK GEDGROUP
+    * TLIBRARY_ID (INTEGER) NOT NULL : FK LIBRARY
+    * TPROFILE_ID (INTEGER) NULL OK : FK PROFILE : Profile associé à un Groupe et une Bibliotèque
+- ajout TLIBRARY.LISTORDER (INTEGER) NULL OK (+ index) : Gestion de l'ordre des tris d'affichage des liste de titre de bib
+- TCONTACT : ajout des colonnes
+    * ORGANIZATION (VARCHAR(100))
+    * SERVICE (VARCHAR(100))
+    * IDENTIFIER (VARCHAR(100))
+    * CELLTEL (VARCHAR(20))
+
+Datas :
+- ajout de la clé TDOMPARAM 'DOMAIN', 'RESTORE' : État des bibliothèques en mode restauration (pas de synchro/backup sur ces bib)
+- ajout de la clé TGEDPARAM 'DROITS', 'AJOUTER_DOCUMENT'
+- Modification de TDOMPARAM 'MACRO_DELIM' : "%%" => "%"
+- Mise à jour des valeurs des paramètres existants suite à cette modification de délimiteur :
+    * TGEDPARAM.VLAUE
+    * TDOMPARAM.VALUE + TDOMPARAM.VALUEBLB (Objet et Corps des emails)
+    * TGEDPARAM*.VALUE : '%geduser_login%' ==> '%login%'
+
+Exceptions :
+- EX_GEDGROUPLIB_EXISTS '50340:Association Groupe d''utilisateur GED/Bibliothèque déjà existante'
+- EX_NOGEDGROUPLIB '50227:Association Groupe d''utilisateur GED/Bibliothèque inexistante dans la table TGEDGROUPLIB';
+
+PS (modifications) :
+- SET_LIBRARY_INFOS : Ajout de I_TLIBRARY_LISTORDER en entrée
+- GET_LIBRARIES : Ajout de LIBRARY_LISTORDER en sortie (non pris en compte en ORDER BY)
+- GET_LIBRARIES_FOR_FBSERVER : Ajout de LIBRARY_LISTORDER en sortie (non pris en compte en ORDER BY)
+- GET_LIBRARIES_FOR_OWNER : Ajout de LIBRARY_LISTORDER en sortie (pris en compte en ORDER BY)
+- GET_LIBRARY_INFOS : Ajout de LIBRARY_LISTORDER en sortie (NA ORDER BY)
+- GET_LIBRARIES_FOR_GEDUSER : Ajout de LIBRARY_LISTORDER en sortie (pris en compte en ORDER BY) + GEDGROUP_ID (groupe primaire du GEDUSER)
+
+- SET_CONTACT_INFOS : ajout de "I_TCONTACT_ORGANIZATION" + "I_TCONTACT_SERVICE" + "I_TCONTACT_IDENTIFIER" + "I_TCONTACT_CELLTEL en entrée
+- GET_CONTACTS : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" en sortie
+- GET_CONTACTS_FOR_OWNER : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" en sortie
+- GET_CONTACTS_TYPES_FOR_LIBRARY : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" en sortie
+- GET_CONTACTS_TYPES_FOR_OWNER : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" en sortie
+- GET_CONTACT_INFOS : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_TEL" en sortie
+- GET_OWNERS : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" en sortie
+- GET_OWNER_INFOS : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" en sortie
+
+- SET_GEDGROUP_INFOS : ajout de "I_TGEDGROUP_TYPE" + "I_TGEDGROUP_PROFILE_ID" + "I_TGEDGROUP_COMMENT" en entrée
+- GET_GEDGROUPS_FOR_GEDUSER : ajout de "GEDGROUP_TYPE" + "PROFILE_ID INTEGER" + "GEDGROUP_COMMENT" + "GEDGROUP_CREATE_DATE" + "GEDGROUP_MODIF_DATE"en sortie
+- GET_GEDGROUPS_FOR_OWNER : ajout de "GEDGROUP_TYPE" + "PROFILE_ID INTEGER" + "GEDGROUP_COMMENT" + "GEDGROUP_CREATE_DATE" + "GEDGROUP_MODIF_DATE" en sortie
+- GET_GEDGROUP_INFOS : ajout de "GEDGROUP_TYPE" + "PROFILE_ID INTEGER" + "GEDGROUP_COMMENT" + "GEDGROUP_CREATE_DATE" + "GEDGROUP_MODIF_DATE" en sortie
+
+- SET GEDUSER_INFOS : ajout de "I_TGEDUSER_TGEDGROUP_ID" en entrée
+- GET_GEDUSERS_FOR_GEDGROUP : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" + "GEDUSER_GEDGROUP_ID" (groupe primaire de l'utilisateur) en sortie
+- GET_GEDUSERS_FOR_LIBRARY : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" + "GEDGROUP_ID" en sortie
+- GET_GEDUSERS_FOR_OWNER : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" + "GEDGROUP_ID" en sortie
+- GET_GEDUSER_ID : Ajout de "GEDGROUP_ID" + "GEDGROUP_PROFILE_ID" (profil associé au groupe primaire) en sortie
+- GET_GEDUSER_INFOS : Ajout de "CONTACT_ORGANIZATION" + "CONTACT_SERVICE" + "CONTACT_IDENTIFIER" + "CONTACT_CELLTEL" + "GEDGROUP_ID" + "GEDGROUP_PROFILE_ID" (profil associé au groupe primaire) en sortie
+
+
+PS (Créations) :
+- ADD_GEDGROUP_TO_LIBRARY : Insertion dans TGEDGROUPLIB
+- DEL_GEDGROUP_FOR_LIBRARY : Suppression dans TGEDGROUPLIB
+- GET_GEDGROUPS_FOR_LIBRARY : Liste des associations TGEDGROUPLIB
+- GET_LIBRARIES_FOR_GEDGROUP : idem
+- GET_ALL_LIBRARIES_FOR_GEDUSER : renvoie les bib directement associées à un utilisateur (TGEDUSERLIB) + les bibs associées à son groupe primaire (TGEDGROUPLIB)
+    * Entrées/sorties identiques à GET_LIBRARIES_FOR_GEDUSER, sauf :
+        * Ajout de I_WITH_DUPLICATE BOOLEAN False par défaut en entrée : précise que l'on souhaite obtenir les doublons éventuellement générés par l'UNION de TGEDUSERLIB et TGEDGROUPLIB
+        * Ajout de LIBRARY_ORIGIN en sortie : 1 si TGEDUSERLIB, 2 si TGEDGROUPLIB ou 0 si I_WITH_DUPLICATE est false en entrée (ie. pas de doublon, donc pas d'origine identifiée)
+        * PROFILE_ID, en sortie, peut-être : TGEDUSERLIB.PROFILE_ID (si LIBRARY_ORIGIN=1), TGEDGROUP.PROFILE_ID (si LIBRARY_ORIGIN=2), 0 si pas de profile rattaché à l'une des origines OU si _WITH_DUPLICATE est false en entrée (ie. pas de doublon, donc pas d'origine identifiée)
+
+
+
+Version 31 (22/11/2013)
+
+  Tables :
+- ajout TOWNER.SIZE_MB (cumul des tailles libs not deleted) et TOWNER.SIZE_MB_CHARGEABLE (cumul des tailles libs not deleted et chargeable [facturable]) + MAJ data correspondantes
+- ajout TFBSERVER.SIZE_MB (cumul des tailles libs hébergées) + MAJ data correspondantes
+- ajout Trigger UPDSIZE_TLIBRARY sur TLIBRARY pour automatiser le calcul de ces tailles après chaque mise à jour de la taille d'une lib
+- ajout TLIBRARY.ACCESS_MODE (0 read-only, 1 hybride, 2 full cloud/web) + MAJ data correspondantes (toutes les libs existantes à 1 [hybride] par défaut)
+
+Datas :
+- ajout de la clé GEDPARAM 'DROITS', 'CHANGEPASSWORD'
+- ajout de la clé GEDPARAM 'CONNEXION', 'COLONNES_MASQUEES' (en + dernière version 31)
+- ajout de la clé GEDPARAM 'DROITS', 'DEPOT_ACTIF_PAR_DEFAUT' (en + dernière version 31)
+- MAJ de la clé GEDPARM 'INTERFACE','RECHERCHER' => 'DROITS', 'RECHERCHER' (en + dernière version 31)
+
+PS impactées par les ajouts/modifications/suppression de champs :
+- GET_OWNERS (TOWNER.SIZE_MB + TOWNER.SIZE_MB_CHARGEABLE en sortie)
+- GET_OWNER_INFOS (TOWNER.SIZE_MB + TOWNER.SIZE_MB_CHARGEABLE en sortie)
+- GET_FBSERVERS (TFBSERVER.SIZE_MB en sortie)
+- GET_FBSERVER_INFOS (TFBSERVER.SIZE_MB en sortie)
+- GET_LIBRARIES (TLIBRARY.ACCESS_MODE en sortie)
+- GET_LIBRARIES_FOR_FBSERVER (TLIBRARY.ACCESS_MODE en sortie)
+- GET_LIBRARIES_FOR_GEDUSER (TLIBRARY.ACCESS_MODE en sortie)
+- GET_LIBRARIES_FOR_OWNER (TLIBRARY.ACCESS_MODE en sortie)
+- GET_LIBRARY_INFOS (TLIBRARY.ACCESS_MODE en sortie)
+- SET_LIBRARY_INFOS (TLIBRARY.ACCESS_MODE en entrée)
+
+Views :
+- ADMBD_DICO : Modification pour afficher les valeurs par défaut des champs (non existant)
+
+Exceptions :
+- 50999 : La valeur passée pour le mode d'accès est incorrecte (pour ACCESS_MODE <> 0, 1 ou 2 dans SET_LIBRARY_INFOS)
+- EX_ERRGEN : supprimée
+- Ajout des exceptions plus spécifiques suivantes :
+     * EX_DELCOLOVERFLOW ==> '50901:Impossible de marquer cet enregistrement pour suppression car cela entrainerait un dépassement de capacité d''une colonnes d''index (ajout des tag suppression)';
+    * EX_NOTABLEORCOL ==> '50900:La table et/ou la colonne n''existe pas dans la base de données';
+    * EX_BADOWNER ==>  '50902:Le Propriétaire passé en paramètre n''est pas celui de la Bibliothèque';
+    * EX_BADACCESSMODE ==> '50903:La valeur passée pour le mode d''accès est incorrecte';
+    * Rappel : la view "ADMBD_EXCEPTIONS" liste les exceptions créées
+- On ne devrait donc plus avoir d'exception "générique" après cette version (à part EX_NONULL mais traitée de manière particulière)
+- Certaines PS ont du être modifiées pour ces nouvelles gestions d'exceptions, mais aucun impact en entrée/sortie, je ne les liste donc pas ici ;-)
+
+
+
+Version 30 (19/11/2013)
+
+ - Ajout TGEDPARAM :
+    * 'DROITS', 'TELECHARGER'
+    * 'DROITS', 'APERCUPDF'
+- Correction PS 'SET_DOMPARAM' : paramètre I_TDOMPARAM_COMMENT en entrée (VARCHAR(255) -> VARCHAR(512))
+    * Pas d'incidence directe NAS
+
+
+
+
+Version 29 (04/10/2013)
+
+ Ajout de DOMPARAM :
+- 'DOMAIN','EMAIL_REINIT_GEDUSER_PASSWORD ==> Sujet et texte de l'email envoyé à l’utilisateur suite à une demande de réinit de mot de passe
+- 'DOMAIN','WEB_URL' : URL du site WEB "officiel" de l'infrastructure du client
+
+Suppression table TLOGCONNECT
+
+
+
+Version 28 (17/09/2013)
+
+- Gestion des events (ajout des TGEDPARAM/TDOMPARAM relatifs)
+- TGEDPARAM DROITS/LIEN
+
+
+
+Version 27 (???)
+
+- Aucune trace (livrée ???)
+
+
+ 
+Version 26 (20/06/2013)
+
+- Un petit correctif sur SET_LIBRARY_INFOS pour permettre des dates de souscription vides (NULL dans TLIBRARY).
+
+
+
+Version 25 (???)
+
+- Aucune trace (livrée ???)
+
+
+
+Version 24 (27/05/2013)
+
+ - Toutes les PS utilisant un paramètre de champ multi-évalué (CONTTYPES_INFOS ou GEDPARAMS_INFOS actuellement), renvoie ce paramètre sous forme BLOB SUB_TYPE 1 (au lieu de varchar(6000) précédemment)
+    * GET_CONTACTS_FOR_OWNER
+    * GET_GEDUSERS_FOR_GEDGROUP
+    * GET_GEDUSERS_FOR_LIBRARY
+    * GET_GEDUSERS_FOR_OWNER
+    * GET_GEDUSER_INFOS
+    * GET_OWNER_INFOS
+    * GET_OWNERS
+- La PS GET_OWNERS (en plus de la modification indiquée ci-dessus) renvoie un BLOB SUB_TYPE 1 pour les GEDPARAMS rattachés à chaque OWNER : GEDPARAMS_INFOS (forme identique à celle utilisée pour CONTTYPES_INFOS), par exemple :
+"LICENCE";"PANIERES_WEB_DOSSIER";"2";"1";"0"|"LICENCE";"TYPE";"7";"FAMILY";"0"
+
+
+
+Version 23 (23/05/2013)
+
+- TLIBRARY.SIZE_MB DEFAULT = 0 (au lieu de NULL auparavant) + UPDATE des values de la table
+- PS GET_LOGSYNCS : ORDER BY de la reque sous-jacente modifié pour TLOGSYNC.TOWNER_ID, TLOGSYNC.TLIBRARY_ID,TLOGSYNC.ID DESC
+- PS GET_LOGSYNCSTATS : ORDER BY modifié pour TLOGSYNC.TOWNER_ID, TLOGSYNC.TLIBRARY_ID (au lieu de TLIBRARY.ID seulement auparavant)
+- PS SET_LIBRARY_INFOS : ajout des paramètres I_TLIBRARY_SIZE_MB et I_TLIBRARY_LAST_SIZE_CHECK en entrée
+
+
+
+Version 22 (20/05/2013)
+
+ - Correction N° exception EX_BAD_GED_LOGIN (doublon) ==> 50503
+- Ajout des paramètres domaine (utilisés par les PS pour séparer les datas des champs "MDF" (MultiData Field) renvoyés par certaines PS (actuellement les paramètres CONTTYPES_INFOS des PS):
+    * 'DOMAIN','MDF_FIELD_SEP', : Séparateur de data (value) dans les champs multi-datas renvoyés par les PS
+    * 'DOMAIN','MDF_RECORD_SEP' : Séparateur d''enregistrement (record) dans les champs multi-datas renvoyés par les PS
+- Ajout du paramètre GED 'CONNEXION', 'FORCEPASSWORD' (à utiliser par le NAS pour forcer l'utilisation des mots de passe à terme)
+- Le paramètre GED 'INTERFACE', 'OUVRIR_DOCS_OFFICE_EN_PDF' n'a PAS été ajouté dans cette version (attende de spécs. fonctionnelles)
+- Gestion des macros dans les messages d'erreur (utilisation de '%%...%%' pour pointer les valeurs manquantes en entrées dans les PS) ; les PS impactées (aucune modification en entrée/sortie, juste adaptation du message d'erreur) sont :
+    * SET_CONTACT_INFOS
+    * SET_CONTTYPE_INFOS
+    * SET_DOMPARAM
+    * SET_FBSERVER_INFOS
+    * SET_GEDGROUP_INFOS
+- Les macros identifiées pour l'instant sont :
+    * %%CONTACT_NAME%%
+    * %%CONTTYPE_NAME%%
+    * %%DOMPARAM_NAME%%
+    * %%FBSERVER_NAME%%
+    * %%FBSERVER_FBADMLOGIN%%
+    * %%FBSERVER_HOST%%
+    * %%GEDGROUP_NAME%%
+- Ajout d'informations complémentaires en sortie pour amélioration des performances NAS/FB :
+    * Aucune modification en entrée pour ces PS (ie. appel identique aux versions précédente)
+    * Seulement des ajouts en sortie (aucun retrait, ni modification de noms de paramètre en sortie), donc, "au pire" pas d'utilisation des colonnes surnuméraires, mais aucun "plantage" ou équivalent
+    * Attention l'ordre des paramètres en sortie a été modifié pour certaines d'entres-elles (pour garder la même logique que précédemment, ie datas "directes", suivies par les datas "indirectes" (id FK, etc.), suivies par les différents STATE)
+    * Nouvelle PS outil GET_CONTTYPE_INFOS pour récupérer les Types de contact d'un contact donné dans un seul champ (cf. paramètres domaine 'DOMAIN','MDF_FIELD_SEP' et 'DOMAIN','MDF_RECORD_SEP' plus haut)
+    * GET_OWNERS : Ajout des informations détaillées CONTACT (CONTTYPES_INFOS contient la concaténation des types de contact)
+    * GET_GEDUSERS_FOR_OWNER : Ajout des informations détaillées GEDUSER (sauf PASSWD) et CONTACT (CONTTYPES_INFOS contient la concaténation des types de contact)
+    * GET_LIBRARIES_FOR_GEDUSER : Ajout des informations détaillées LIBRARY
+    * GET_LIBRARIES_FOR_OWNER : Ajout des informations détaillées LIBRARY
+    * GET_LIBRARIES_FOR_FBSERVER : Ajout des informations détaillées LIBRARY
+    * GET_CONTACTS_FOR_OWNER : Ajout des informations détaillées CONTACT (CONTTYPES_INFOS contient la concaténation des types de contact)
+    * GET_PROFILES_FOR_OWNER : Ajout des informations détaillées PROFILE
+    * GET_CONTACTS_TYPES_FOR_LIBRARY : Ajout des informations détaillées CONTACT (cette PS renvoie déjà le détail du type de contact, donc pas de CONTTYPES_INFOS, mais les colonnes de la table TCONTTYPE ID + NAME directement)
+    * GET_CONTACTS_TYPES_FOR_OWNER : Ajout des informations détaillées CONTACT (cette PS renvoie déjà le détail du type de contact, donc pas de CONTTYPES_INFOS, mais les colonnes de la table TCONTTYPE ID + NAME directement)
+    * GET_GEDUSERS_FOR_GEDGROUP : Ajout des informations détaillées GEDUSER (sauf PASSWD) et CONTACT (CONTTYPES_INFOS contient la concaténation des types de contact)
+    * GET_GEDUSERS_FOR_LIBRARY : Ajout des informations détaillées GEDUSER (sauf PASSWD) et CONTACT (CONTTYPES_INFOS contient la concaténation des types de contact)
+    * GET_GEDGROUPS_FOR_GEDUSER : ajout du GEDGROUP_NAME en sortie
+    * GET_GEDGROUPS_FOR_OWNER : ajout du GEDGROUP_NAME en sortie
+    * GET_GEDUSER_INFOS : Ajout des informations détaillées CONTACT (CONTTYPES_INFOS contient la concaténation des types de contact)
+    * GET_OWNER_INFOS : Ajout des informations détaillées CONTACT (CONTTYPES_INFOS contient la concaténation des types de contact)
+- Gestion des Blobs :
+    * ajout de PS pour extraire les blobs de chaque table concernée (principe identique à celui des "SET_XXX_VLAUEBLB") ; les appels sont identiques à ceux utilisés pour les PS "GET_XXXPARAMXXX" correspondant, donc le remplacement des anciens appels de PS dans le NAS devraient être simplifié) :
+        * GET_DOMPARAM_VALUEBLB
+        * GET_GEDPARAM_VALUEBLB
+        * GET_GEDPARAMPROF
+        * GET_GEDPARAMUSER_VALUEBLB
+        * GET_GEDPARAMOWNER_VALUEBLB
+    * Modification des PS suivantes ou les paramètres BLOB en sortie sont remplacés par des paramètres BOOLEAN "XXXXXX_VALUE_BLOB_FILLED" à true si le blob est NOT NULL et false dans le cas contraire :
+        * GET_DOMPARAM (utilisation de la PS GET_DOMPARAM_VALUEBLB pour extraire un BLOB)
+        * GET_GEDPARAM (utilisation de la PS GET_GEDPARAM_VALUEBLB pour extraire un BLOB)
+        * GET_GEDPARAMPROF (utilisation de la PS GET_GEDPARAMPROF_VALUEBLB pour extraire un BLOB)
+        * GET_GEDPARAMUSER (utilisation de la PS GET_GEDPARAMUSER_VALUEBLB pour extraire un BLOB)
+        * GET_GEDPARAM_FOR_NAME (utilisation de la PS GET_GEDPARAM_VALUEBLB pour extraire un BLOB)
+        * GET_GEDPARAMOWNER (utilisation de la PS GET_GEDPARAMOWNER_VALUEBLB pour extraire un BLOB)
+
+- SET_GEDPARAM_VALUEBLB devient SET_GEDPARAM_DEFAULTVALUEBLB avec cette nouvelle version...
+- GET_GEDUSER_ID accepte un password vide
+
+
+
+Version 21 (11/04/2013)
+
+ Les évolutions sont :
+- Table TGEDPARAM : Ajout de la Colonne "CLASS" (INTEGER)
+- Table TGEDPARAMOWNER ajoutée (structure similaire à TGEDPARAMPROF)
+- Les PS suivantes sont impactées :
+    * GET_GEDPARAM (ajout de GEDPARAM_CLASS en sortie, après GEDPARAM_TYPE)
+    * GET_GEDPARAM_FOR_NAME (ajout de GEDPARAM_CLASS en sortie, après GEDPARAM_TYPE)
+    * GET_GEDPARAMS (ajout de GEDPARAM_CLASS en sortie, après GEDPARAM_TYPE)
+    * SET_GEDPARAM (ajout de I_TGEDPARAM_CLASS en entrée, après I_TGEDPARAM_TYPE)
+
+- Les PS suivantes sont créées :
+    * SET_GEDPARAMOWNER
+    * SET_GEDPARAMOWNER_VALUEBLB
+    * DEL_GEDPARAMOWNER
+    * GET_GEDPARAMOWNERS_FOR_OWNER
+    * GET_GEDPARAMOWNER
+
+
+
+Version 20 (26/03/2013)
+
+ Les évolutions sont :
+- Colonnes "SYSTEM" (BOOLEAN) TDOMPARAM/TGEDPARAM deviennent "PROTECTION" (STATE INTEGER)
+- Les PS suivantes sont impactées :
+    * GET_DOMPARAM (DOMPARAM_SYSTEM devient DOMPARAM_PROTECTION en sortie)
+    * GET_DOMPARAMS (DOMPARAM_SYSTEM devient DOMPARAM_PROTECTION en sortie)
+    * DEL_DOMPARAM (Suppression du paramètre I_FORCE)
+        Plus de contrôle en terme de suppression (le NAS fait le travail)
+    * SET_DOMPARAM (I_TDOMPARAM_SYSTEM devient I_TDOMPARAM_PROTECTION en entrée)
+    * GET_GEDPARAM (GEDPARAM_SYSTEM devient GEDPARAM_PROTECTION en sortie)
+    * GET_GEDPARAM_FOR_NAME (GEDPARAM_SYSTEM devient GEDPARAM_PROTECTION en sortie)
+    * GET_GEDPARAMS (GEDPARAM_SYSTEM devient GEDPARAM_PROTECTION en sortie)
+    * SET_GEDPARAM (I_TGEDPARAM_SYSTEM devient I_TGEDPARAM_PROTECTION en entrée)
+
+- PS GET_OWNER_ID modifiée de manière à ce que le PASSWD ne soit plus obligatoire en entrée (ie. chaine vide acceptée) :
+    * Si LOGIN seulement passé (ie PASSWD='') alors on renvoi l'ID/STATE par rapport à ce login seulement...
+    * Si LOGIN+PASSWD passés, on travaille comme actuellement, ie on valide par rapport à ces 2 paramètres...
+
+
+
+Version 19 (19/02/2013)
+
+ - Une toute petite MAJ pour la procédure d'ajout de log ADD_LOGSYNC (qui transformait les "0" en entrée en NULL, mais Ko dans ce contexte car 0 est une valeur légale). Aucune modification d'appel de cette procédure au niveau du NAS.
+
+- MAJ sur TDOMPARAM concernant les signatures email (et aussi l'intégration des emails ADMIN/OWNER)...
+
+
+
+Version 18 (12/08/2013)
+
+Un certain nombre de PS (non touchée depuis longtemps) ne respectaient pas les règles définies (déclaration de tous les paramètres en entrée NOT NULL). Rien de grave, c'est plus de la cosmétique et du respect des principes établis que des changements majeurs...
+
+De plus, il y a un certain nombre de paramètres mal défini dans init_domain.sql (si recréation de base domaine) pour la V17...
+
+Aucune modification ne devrait être nécessaire au niveau du NAS (sauf si un paramètre de PS est passé à NULL quelque part, mais ce serait donc un bug qu'il faudrait corriger).
+
+
+
+
+Version 17 (11/02/2013)
+
+ - PS GET_CONTACTS_FOR_OWNER modifiée comme suit :
+    - Ajout d'un paramètre "I_TCONTACT_ALL" en entrée (2ème position, ie avant les STATES) qui permet de définir si l'on souhaite avoir TOUS les contacts associés au OWNER demandés (True) ou seulement ceux qui ne sont pas les CONTACTS par défaut du OWNER (False, par défaut)
+ - GET_CONTACTS_TYPES_FOR_CONTACT :
+    - Renvoi "l’utilisation" des contacts dans les tables TCONTOWER et TCONTLIB
+    - Attention, donc, si un contact existant dans TCONTACT n'apparait pas dans l'une de ces 2 tables, cette PS ne le renverra pas non plus (INNER JOIN) ==> me confirmer (ou non) cet aspect...
+    - Les enregistrements en sortie sont triés pas LIB_ID (quoi faire d'autre ?)
+    - Identification de l'origine des enregistrements retournés :
+        * LIB_ID <> 0 ==> TCONTLIB
+        * LIB_ID = 0 ==> TCONTOWNER
+        * Attention, les autres paramètres pouvant être retournés à 0 sont ambigüe (par exemple FBSERVER_ID peut être à 0 si une LIB n'est pas associé à un serveur, CONTLIB_SYNC_EMAIL est à 0 pour les TCONTLIB ne souhaitant PAS recevoir d'email, etc...
+    - Attend :
+        * TCONTACT_ID : un identifiant de contact
+        * *STATE : les STATES éventuellement nécessaires à la sélection (Visibilité par défaut si non utilisés)
+    - Retourne :
+        * CONTACT_ID : toujours peuplé (et doit toujours être le même)
+        * OWNER_ID  : toujours peuplé (et doit toujours être le même)
+        * LIBRARY_ID : peuplé si TCONTLIB (0 sinon)
+        * CONTTYPE_ID : toujours peuplé
+        * CONTLIB_SYNC_SENDMAIL : peuplé (0/1/2) si TCONTLIB (attention toutefois, ce paramètre est aussi à 0 si l'enregistrement provient de TCONTOWNER)
+        * LIBRARY_TITLE : peuplé si TCONTLIB ('' sinon)
+        * CONTTYPE_NAME : toujours peuplé
+        * FBSERVER_ID : peuplé si TCONTLIB (0 sinon)
+        * *STATE : toujours peuplés quelque soit l'origine...
+
+- Table TDOMPARAM : Ajout de SECTION (PK = SECTION + NAME, donc section NOT NULL...)
+
+- Mise à jour des datas déjà présentes dans TDOMPARAM (en fonction de la nouvelle nomenclature https://docs.google.com/spreadsheet/ccc?key=0AlcZ-Ie3N9PpdElqcGFHWjJwamYtQl9pTWtyNWVCM3c#gid=0) ==> Attention à vérifier ce point pour vos bases... Si vous pensez que ce n'est pas Ok, vous pouvez passer le script "init_domain.sql" pour vous mettre à jour (avec les valeurs par défaut)
+
+- Ajout des enregistrements concernant les emails de synchro
+
+- PS :
+    * SET_DOMPARAM : ajout de SECTION en entrée
+    * SET_DOMPARAM_VALUEBLB : ajout de SECTION en entrée
+    * GET_DOMPARAM : ajout de SECTION en entrée/sortie
+    * GET_DOMPARAMS : ajout de SECTION en sortie
+    * DEL_CONTACT : modifications internes (aucune modification en entrée/sortie)
+    * DEL_FBSERVER : modifications internes (aucune modification en entrée/sortie)
+    * DEL_GEDUSER : modifications internes (aucune modification en entrée/sortie)
+    * DEL_LIBRARY : modifications internes (aucune modification en entrée/sortie)
+    * DEL_OWNER : modifications internes (aucune modification en entrée/sortie)
+    * GET_ALTER_STATE_OK : modifications internes (aucune modification en entrée/sortie)
+    * GET_DOM_ACCESS : modifications internes (aucune modification en entrée/sortie)
+    * GET_LIBRARY_CONNECT : modifications internes (aucune modification en entrée/sortie)
+    * GET_OWNER_IS_ADMIN : modifications internes (aucune modification en entrée/sortie)
+    * GET_VISIBILITY_STATE_OK : modifications internes (aucune modification en entrée/sortie)
+    * UNDEL_CONTACT : modifications internes (aucune modification en entrée/sortie)
+    * UNDEL_FBSERVER : modifications internes (aucune modification en entrée/sortie)
+    * UNDEL_GEDUSER : modifications internes (aucune modification en entrée/sortie)
+    * UNDEL_LIBRARY : modifications internes (aucune modification en entrée/sortie)
+    * UNDEL_OWNER : modifications internes (aucune modification en entrée/sortie)
+
+
+
+
+Version 16 (01/02/2013)
+
+ - PS
+    * Création de "SET_CONTACT_TYPE_TO_LIBRARY" qui annule et remplace "ADD_CONTACT_TYPE_TO_LIBRARY" : même appel, donc "juste à renommer" dans les procédures appelantes...
+    * Création de "GET_CONTACT_TYPE_FOR_LIBRARY"
+    * Modification de "GET_GEDUSER_INFOS" pour renvoyer le password (vérification de l'existant avant modification d'un passord) juste après le login...
+
+- Datas :
+    * Insertion des nouveaux paramètres :
+        - DOM_ADMIN_EMAIL (vide par défaut)
+        - CLOUD_CLIENT_VERSION (vide par défaut) : initialiser en tant que type text (1), merci de me dire si cela ne vous convient pas (integer ?)
+        - CLOUD_CLIENT_PACKAGE (vide par défaut)
+        - NOVAXEL_VOL_PRINC devient GED_FILENAME
+
+
+
+
+Version 15 (28/01/2013)
+
+ Voici la base domaine V15 qui permet de traiter les emails d'alerte de synchro :
+
+- Tables :
+    * TDOMPARAM : Ajout de la colonne VALUEBLB
+    * TCONTLIB : ajout de la colonne SYNC_SENDMAIL
+        * basé sur un domain FB "SYNC_MAIL" (NOT NULL) qui accepte 3 valeurs :
+            0 : pas de mail
+            1 : mail si erreur de synchro seulement
+            2 : mail sur toutes les synchros
+- PS
+    * ADD_CONTACT_TYPE_TO_LIBRARY : ajout de la colonne I_TCONTLIB_SYNC_SENDMAIL en entrée (après I_TCONTTYPE_ID), voir domaine FB SYNC_MAIL pour valeurs possibles
+    * GET_CONTACTS_TYPES_FOR_LIBRARY : ajout de la colonne CONTLIB_SYNC_SENDMAIL en sortie (après CONTTYPE_ID)
+    * SET_DOMPARAM_VALUEBLB : Nouvelle PS pour MAJ TDOMPARAM.VALUEBLB (même principe de gestion que les TGEDPARAM*.VALUEBLB)
+    * GET_DOMPARAMS : Ajout de la colonne DOMPARAM_VALUEBLB_FILLED en sortie (après DOMPARAM_VALUE) (true si VALUEBLB est rempli, même principe de gestion que les GET_GEDPARAMS*)
+    * GET_DOMPARAM : ajout de la colonne DOMPARAM_VALUEBLB en sortie (après DOMPARAM_VALUE) ; renvoie le Blob
+
+
+
+
+Version 14 (11/01/2013)
+
+Une toute petite mise à jour (pour le moment) pour GET_OWNER_INFOS qui renvoie le password (juste après le LOGIN en sortie)...
+
+
+
+
+Version 13 (10/12/2012)
+
+
+    * Ajout LIB_ROOTPATH
+    * Modification PS GET_FBSERVERS (ajout LIB_ROOTPATH en avant dernière position, avant STATE)
+    * Modification PS GET_FBSERVER_INFOS (ajout LIB_ROOTPATH en avant dernière position, avant STATE)
+    * Modification PS SET_FBSERVER_INFOS (ajout LIB_ROOTPATH en avant dernière position, avant STATE)
+* TLIBRARY :
+    * Ajout GUID
+    * Modification PS GET_LIBRARIES (ajout GUID après TITLE)
+    * Modification PS GET_LIBRARY_INFOS (ajout GUID après TITLE)
+    * Modification PS SET_LIBRARY_INFOS (ajout GUID après TITLE)
+* TDOMPARAM :
+    * Ajout PS GET_DOMPARAMS
+    * Modification PS SET_DOMPARAM (ajout du paramètre "FORCE" en entrée et en dernière position)
+    * Modification PS DEL_DOMPARAM (ajout du paramètre "FORCE" en entrée et en dernière position)
+* TLOGSYNC
+    * Ajout TOWNER_ID
+    * Ajout DURATION (COMPUTED BY) ==> durée de synchro en nombre de secondes
+    * Ajout PS ADD_LOGSYNC pour insérer un log de synchro (utilisé par la procédure de synchro serveur selon des modalités en cours de réflexion, ie soit un service NAS identifié, soit le service d'appel de PS en cours de réalisation)
+    * Ajout PS GET_LOGSYNCS qui donne les détails de synchros pour un OWNER et/ou une LIBRARY et éventuellement des critères sur période et STATE
+    * Ajout PS GET_LOGSYNCSTATS_FOR_OWNER qui donne des statistiques (cumuls) pour un OWNER (toutes libraries en sortie, le client devra éventuellement cumuler ces éléments pour des stats générales sur le OWNER lui-même) et éventuellement des critères sur période et STATE
+    * Pour ces 2 dernières PS, je vous joins des fichiers CSV vous donnant une idée du résultat obtenu pour un OWNER possédant plusieurs LIBRARIES
+
+- Domaine BOOLEAN :
+    * Modification pour prise en compte de la valeur 32767 afin de signifier que ce champ ne doit pas être pris en compte en tant que critère dans les PS (cf. échange de mail "On l'a dans le dos ;-)" du 10/12/2012
+
+
+
+Version 12 (09/11/2012)
+
+ Les modifications suivantes (mineures) sont apportées :
+- Ajout de TCONTACT_ID dans TOWNER (contact principal d'un OWNER)
+    * les PS suivantes sont impactées :
+        - GET_OWNERS
+        - GET_OWNER_INFOS
+        - SET_OWNER_INFOS
+    * La colonne CONTACT_ID apparait toujours après la colonne PROFILE_ID de ces procédures (juste avant les ID et STATES le cas échéant)
+- Ajout d'index et modifications pour tri correct dans GET_CONTACTS (pas d'incidence directe sur le NAS)
+
+ Révision des noms de paramètres/colonnes :
+Au niveau des tables 
+- TOWNER :
+    * DOM_LOGIN => LOGIN
+    * DOM_PASSWD => PASSWD
+    * TCONTACT_ID en plus
+- TGEDUSER :
+    * GED_LOGIN => LOGIN
+    * GED_PASSWD => PASSWD
+ Au niveau des PS :
+
+    * OWNER (La colonne CONTACT_ID apparait toujours après la colonne PROFILE_ID de ces procédures, juste avant les autres ID et STATES le cas échéant) :
+        - GET_OWNERS : ajout CONTACT_ID + renommage DOM_LOGIN => LOGIN
+        - GET_OWNER_INFOS : ajout + CONTACT_ID + renommage DOM_LOGIN => LOGIN
+        - SET_OWNER_INFOS : ajout + CONTACT_ID + renommage DOM_LOGIN => LOGIN
+        - DEL_OWNER : traitement des tag de suppression LOGIN (pas d'incidence directe à l'appel/utilisation)
+        - GET_OWNER_ID : renommage DOM_LOGIN => LOGIN + DOM_PASSWD => PASSWD
+        - SET_OWNER_PASSWD : renommage DOM_PASSWD => PASSWD
+
+    * GEDUSER :
+        - DEL_GEDUSER : traitement des tag de suppression LOGIN (pas d'incidence directe à l'appel/utilisation)
+        - SET_GEDUSER_INFOS : renommage GED_LOGIN => LOGIN (pas d'incidence directe à l'appel/utilisation, seulement en interne)
+        - GET_GEDUSER_ID : renommage GED_LOGIN => LOGIN + GED_PASSWD => PASSWD
+        - SET_GEDUSER_PASSWD : renommage GED_PASSWD => PASSWD
+
+    * Autres :
+        - GET_CONTACTS : sortie triée sur le Nom de famille du contact (pas d'incidence directe à l'appel/utilisation)
+        - GET_CONTTYPES : sortie triée sur les noms de types (pas d'incidence directe à l'appel/utilisation)
+        - ADD_CUSTOMER : Gestion des renommages LOGIN + PASSWD (pas d'incidence directe à l'appel/utilisation, car non utilisées par le NAS normalement)
+
+
+
+Version 11 (17/10/2012)
+
+Les modifications suivantes sont apportées :
+- Plus de contrainte d'échelle de valeur pour les types de paramètres (CHECK entre 1 et 7)
+- Ajout (ou MAJ si existant) du paramètre domaine GED_RECORDS_VISIBILITY
+- Mise à jour des enregistrements TGEDPARAMXXX pour renommer les sections et paramètres ("GED" ==> "CONNEXION", etc...)
+- TGEDPARAMPROF/USER acceptent l'ajout de paramètres sans VALUE ni VALUEBLOB
+- Ajout de la colonne SYSTEM dans la table TGEDPARAM
+    * les PS suivantes sont impactées :
+        - GET_GEDPARAM
+        - GET_GEDPARAM_FOR_NAME
+        - GET_GEDPARAMS
+        - SET_GEDPARAM
+    * La colonne SYSTEM apparait toujours après la colonne COMMENT de ces procédures (juste avant les ID et STATES le cas échéant)
+- Ajout des colonnes "MODIF_DATE" dans TGEDPARAMPROF et TGEDPARAMUSER
+    * aucune PS SET_XXX impactée (mise à jour par trigger)
+    * toutes les PS GET_GEDPARAMPROF/USER_XXX sont impactées
+        - Les DATE_MODIF se trouvent toujours après la colonne COMMENT de ces PS
+- Mise en place des MAJ BLOB pour les TGEDPARAM_XXX
+    * L'insertion ou la MAJ de valeur BLOB par les PS SET_GEDPARAMXXX n'est plus possible, donc
+    * Toutes les PS SET_GEDPARAMXXX ne disposent plus de la colonne BLOB en entrée
+    * Ajout de PS spécifiques pour les mises à jours de valeur BLOB pour les paramètres (pas d'ajout de paramètre possible à l'aide de ces PS) :
+        - SET_GEDPARAM_VALUEBLB
+        - SET_GEDPARAM_VALUEBLB
+        - SET_GEDPARAM_VALUEBLB
+
+    * La démarche de "récupération" des ces valeurs BLOB est inchangée (GET_GEDPARAMXXX (VALUE_BLB_IS_FILLED et VALUE_BLB en fonction des PS concernées)
+
+
+
+
+Version 10 (25/09/2012)
+
+Gestion des paramètres pour une utilisateur GED :
+- Table TGEDPARAMUSER
+- PS SET_GEDPARAMUSER
+- PS DEL_GEDPARAMUSER
+- GET_GEDPARAMUSERS_FOR_USER
+- GET_GEDPARAMUSER
+- Ajout de TGEDUSER.CHARGEABLE
+	- PS GET_GEDUSER_INFOS (ajout du paramètre en sortie)
+	- PS Set_GEDUSER_INFOS (ajout du paramètre en entrée)
+
+
+
+
+Version 9 (10/09/2012)
+
+- MAJ des tables en fonction du nouveau modèle pour la gestion des PROFILES défini dans la doc https://docs.google.com/document/d/1Ker4-YzM9b6A1qSDm3Fy6BX3YlUewYtP2zxUFQtiZOM/edit)
+- Les PS suivantes ont été impactées par les évolutions :
+    * SET/DEL_GEDPARAM finalement implémentées
+    * GET_GEDPARAM* ont toutes été adaptées au nouveau fonctionnement (prise en compte de OWNER_ID et LIB_ID)
+        Les principes retenus pour le filtrage des paramètres en fonction de l'appel de ces PS (ie. les contexte d'application) est expliqué en commentaire de la PS "GET_GEDPARAMS"
+    * GET/SET_PROFILE_INFOS (gestion LIB + GEDUSER)
+    * GET_PROFILES_FOR_LIBRARY n'existe plus, c'est GET_PROFILE_FOR_OWNER qui prend en charge le filtrage par LIB ET/OU GEDUSER
+        Les principes retenus pour le filtrage des profils en fonction de l'appel de ces PS (ie. les contexte d'application) est expliqué en commentaire de la PS "GET_PROFILES_FOR_OWNER"
+    * Enfin, la gestion des ajouts de GEDPARAM dans les PROFILES (ie TGEDPARAMPROF) a bien entendu été complètement revue pou prendre en compte l'ajout complet des datas.
+        ADD_GEDPARAM_TO_PROFILE ==> toutes les datas doivent être passées (pas forcément toutes obligatoires cependant)
+        DEL_GEDPARAM_FOR_PROFILE ==> Suppression sur PK TGEDPARAMPROF; ie TPROFILE_ID, SECTION et NAME...
+        GET_GEDPARAMS_FOR_PROFILE ==> Adaptation interne
+        GET_GEDPARAM_FOR_PROFILE    ==> idem
+
+
+
+Version 8 (27/08/2012)
+
+- Suppression TPROFILE actuelle + enfants + PS associées, etc...
+- Renommer PS UNDELETE en UNDEL... (via modif suite GET_DOM_PARAM)
+- Dates administratives sur TOWNER (SUSBSCRIBE_START...)
+- Dates administratives sur TGEDUSER (SUSBSCRIBE_START...)
+- Implémentation TPROFILE + USERGEED & Co
+- Revoir les codes Erreur Applicatif sur les Exceptions (ADMBD_EXCEPTIONS)
+
+
+
+Version 7 (11/09/2013)
+
+- Première version exploitable (ie. version initiale)

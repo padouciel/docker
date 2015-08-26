@@ -1,0 +1,135 @@
+
+// {$DEFINE DEBUG}
+
+Program CreateDBDomain;
+
+{$I maj_bdcloud_inc.xnov}
+ 
+Const
+	// Noms des procédures SQL de création par défaut
+	PROC_SQL_DOMAIN='domain.sql';
+	PROC_SQL_EVENT='event.sql';
+
+	// Où stocker les BD par défaut (Création)...
+	{$IFDEF LINUX}
+//		REPDEF_DB='/var/lib/firebird/';
+	REPDEF_DB='/tmp/test_db_nas/';
+	{$ELSE}
+		REPDEF_DB='c:\novaxel\cloud\domain\';
+	{$ENDIF}
+
+  
+Function CreateDB(cDataBase:string; ScriptSQL:String):boolean;
+var 
+	//db: TUIBDatabase;
+//	RunScript: TRunScriptSQL;
+	VerFB:String;
+	lConf:TstringList;
+	Caller:String;
+begin
+	Caller:='CreateDB';
+
+	Result:=False;
+
+	if Not FileExists(ScriptSQL) then
+	Begin
+		SetExitCode(10);
+		RaiseException(erCustomError,'Le script de création SQL de base de données "' +  ScriptSQL + '" (cf. option "-f") n''a pas pu être trouvé...');
+	End;
+
+	db := TUIBDatabase.create(nil);
+	db.databasename := cDataBase;
+	db.CharacterSet := FB_CHARACTER_SET;
+	db.SQLDialect := FB_DIALECT;
+
+	db.username := oFirebird.User;
+	db.password := oFirebird.pwd;
+
+ 		// Forçage du mode embed, quelque soit le contexte FB...
+ 		{$IFDEF MSWINDOWS}
+ 				db.LibraryName := ExtractFilePath(paramstr(0)) + FB_EMBEDLIB;
+// 		{$ELSE}
+// 				db.LibraryName := FB_EMBEDLIB;
+ 		{$ENDIF}
+
+	
+	Try
+		LogAction('Création de la base de données : "' + db.databasename + '"',Caller,LOG_INFO);
+		db.CreateDatabase(FB_CHARACTER_SET,FB_PAGE_SIZE);
+
+// 		db.Connected();
+		oFirebird.db:=db;
+	Except
+		SetExitCode(3);
+		RaiseException(erCustomError,'Impossible de créer la base de données "' + db.databasename + '" : '
+			+ CRLF + '	' + ExceptionParam +
+			iif(trim(oFirebird.errmsg)<>'', CRLF + '	' + oFirebird.errmsg,''));
+	End;
+
+	// Version FB nécessaire BD Domaine : >= 2.5
+	// Win : "WI-V2.5.2.26540 Firebird 2.5" / Linux : "LI-V2.5.2.26539 Firebird 2.5"
+	// Test des versions serveurs (TODO : voir pb JMB DLL cliente 2.1/Serbeur 2.5)
+	LogAction('Version Firebird complète: "' + Db.InfoFirebirdVersion + '"',Caller,LOG_DEBUG);
+	VerFB:=Trim(Copy(Db.InfoFirebirdVersion,pos('Firebird', Db.InfoFirebirdVersion)+9,Length(Db.InfoFirebirdVersion)));
+	LogAction('Version MAJ.MIN Firebird : "' + VerFB + '"',Caller,LOG_DEBUG);
+	lconf:=SplitStr(VerFB,'.');
+	
+	// short circuit evaluation Ok (cf. http://www.freepascal.org/docs-html/ref/refsu41.html#x131-14100012.8.3)
+	LogAction('Vérification de la compatibilité de la version du serveur Firebird (version reconnue : ' + VerFB + ')',Caller,LOG_INFO);
+	if (StrToInt(lconf[0])<VER_MAJFB) or (StrToInt(lconf[1])< VER_MINFB) then
+	Begin
+		//if oFirebird.Connected then db.DropDatabase;
+		SetExitCode(3);
+		RaiseException(erCustomError,'La version du serveur Firebird est inférieure à celle requise par cette procédure (version serveur détectée : ' + VerFB + ' vs version minimale attendue ' + intToStr(VER_MAJFB) + '.' + intToStr(VER_MINFB) + ')');
+	End;
+
+	if not RunSQLFile(ScriptSQL) then
+	Begin
+		SetExitCode(2);
+		RaiseException(erCustomError,
+			'Erreur lors de l''application du script de création de base de données "' + ScriptSQL + '"'
+		);
+	End;
+
+	Result:=True;
+	Output('La base de données "' + db.databasename +'" a bien été créée !' +
+	iif(ExitCode()<>0,CRLF + 'Attention des erreurs *non fatales* ont eu lieu pendant cette création...',''));
+end;
+  
+Var
+	Caller:String;
+Begin
+	Caller:='CreateDBDomain';
+
+	proc_DBDom:=PROC_SQL_DOMAIN;
+	proc_DBEvent:=PROC_SQL_EVENT;
+
+	DBPath:=REPDEF_DB;
+
+	SetExitCode(0);
+
+	LogAction('proc_DBDom : "' + proc_DBDom + '"' + CRLF + 'proc_DBEvent : "' + proc_DBEvent + '"' ,Caller,LOG_DEBUG);
+
+
+	Try
+
+		// Récupération des paramètres, Init Variables globales, Vérif accès DB, etc...
+		If Not GetParamsCreate() then exit;
+
+		if not EventOnly then
+			CreateDB(IncludeTrailingPathDelimiter(DBPath) +'domain.fdb', proc_DBDom);
+
+		
+		if not DomainOnly then
+			CreateDB(IncludeTrailingPathDelimiter(DBPath) +'event.fdb', proc_DBEvent);
+
+	Except
+		// Si aucun code de sortie défini, on n'est crée un...
+		if ExitCode=0 then SetExitCode(1);
+		LogAction('L''erreur fatale suivante s''est produite :' + CRLF + '	' + ExceptionParam,Caller,LOG_ERROR);
+// 		RaiseLastException;
+
+	Finally
+		FreeRes;
+	End;
+End.

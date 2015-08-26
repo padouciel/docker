@@ -1,0 +1,40 @@
+2015-08-05 12:44:40  : create_db - GetParamsCreate : [INFO] : =====================================================================================================
+2015-08-05 12:44:40  : create_db - GetParamsCreate : [INFO] : Lancement de la procédure de création
+2015-08-05 12:44:40  : create_db - GetParamsCreate : [INFO] : Traitement des paramètres...
+2015-08-05 12:44:40  : create_db - CreateDBDomain : [ERREUR] : L'erreur fatale suivante s'est produite :
+	Le répertoire "/tmp/test_db_nas/" n'existe pas...
+2015-08-05 12:45:54  : create_db - GetParamsCreate : [INFO] : =====================================================================================================
+2015-08-05 12:45:54  : create_db - GetParamsCreate : [INFO] : Lancement de la procédure de création
+2015-08-05 12:45:54  : create_db - GetParamsCreate : [INFO] : Traitement des paramètres...
+2015-08-05 12:45:54  : create_db - CreateDBDomain : [ERREUR] : L'erreur fatale suivante s'est produite :
+	Le répertoire "fbserver:/srv/firebird" n'existe pas...
+2015-08-05 12:50:00  : create_db - GetParamsCreate : [INFO] : =====================================================================================================
+2015-08-05 12:50:00  : create_db - GetParamsCreate : [INFO] : Lancement de la procédure de création
+2015-08-05 12:50:00  : create_db - GetParamsCreate : [INFO] : Traitement des paramètres...
+2015-08-05 12:50:00  : create_db - CreateDBDomain : [ERREUR] : L'erreur fatale suivante s'est produite :
+	Le répertoire "fbserver:/srv/firebird" n'existe pas...
+2015-08-05 12:53:24  : create_db - GetParamsCreate : [INFO] : =====================================================================================================
+2015-08-05 12:53:24  : create_db - GetParamsCreate : [INFO] : Lancement de la procédure de création
+2015-08-05 12:53:24  : create_db - GetParamsCreate : [INFO] : Traitement des paramètres...
+2015-08-05 12:53:24  : create_db - CreateDBDomain : [ERREUR] : L'erreur fatale suivante s'est produite :
+	Le répertoire "fbserver:/srv/firebird" n'existe pas...
+2015-08-05 12:53:51  : create_db - GetParamsCreate : [INFO] : =====================================================================================================
+2015-08-05 12:53:51  : create_db - GetParamsCreate : [INFO] : Lancement de la procédure de création
+2015-08-05 12:53:51  : create_db - GetParamsCreate : [INFO] : Traitement des paramètres...
+2015-08-05 12:53:51  : create_db - CreateDBDomain : [ERREUR] : L'erreur fatale suivante s'est produite :
+	Le répertoire "/tmp/test_db_nas/" n'existe pas...
+2015-08-05 12:54:03  : create_db - GetParamsCreate : [INFO] : =====================================================================================================
+2015-08-05 12:54:03  : create_db - GetParamsCreate : [INFO] : Lancement de la procédure de création
+2015-08-05 12:54:03  : create_db - GetParamsCreate : [INFO] : Traitement des paramètres...
+2015-08-05 12:54:03  : create_db - CreateDB : [INFO] : Création de la base de données : "/tmp/domain.fdb"
+2015-08-05 12:54:03  : create_db - CreateDBDomain : [ERREUR] : L'erreur fatale suivante s'est produite :
+	Impossible de créer la base de données "/tmp/domain.fdb" : 
+	Unable to complete network request to host "localhost".
+
+Failed to establish a connection.
+
+can't format message 13:98 -- message file /var/lib/firebird/system/firebird.msg not found
+
+
+
+GDS Code: 335544721Error Code: 401
