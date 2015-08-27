@@ -39,27 +39,28 @@ VOLUME ["$NAS_DB_PATH"]
 VOLUME ["/var/log/firebird"]
 
 # La config FB
-VOLUME ["/etc/firebird"]
+# VOLUME ["/etc/firebird"]
 
 # Data system (security.fdb, udf Novaxel, etc...)
 VOLUME ["/var/lib/firebird/system"]
 
 
-# Copy du fichier de configuration Firebird spécifique
+# Copy configuration file in right place
 COPY firebird.conf /etc/firebird/
+COPY stunnel.conf /opt/novaxel/
+COPY rsyncd.conf /opt/novaxel/
 
 # UDF Novaxel
 COPY udf/* /var/lib/firebird/system/udf/
+
+# Dummy certificates for stunnel
+COPY certs/ /opt/novaxel/certs/
 
 # The firebird port
 EXPOSE 3050/tcp
 # The synchronization port (via stunnel)
 EXPOSE 60443/tcp
 
-USER firebird:firebird
-
-ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
-
-USER root
-
-ENV TERM=xterm
+COPY entrypoint.sh /
+#ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
+ENTRYPOINT ["/entrypoint.sh"]

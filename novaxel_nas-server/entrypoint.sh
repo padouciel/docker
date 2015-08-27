@@ -10,7 +10,9 @@ function cleanup()
 	# On arrive ici après le trap
 	echo "Stopping NAS"
 
-	kill $NAS_PID && killall Xvfb
+	killall -w novaappserver || "Error ${?}"
+	# no matter...
+	killall Xvfb
 
 	echo "Exited ${?}"
 }
