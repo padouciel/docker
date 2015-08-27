@@ -18,17 +18,21 @@ COPY	firebird*.rpm /tmp/
 RUN yum -y localinstall /tmp/firebird-*.rpm && \
 	rm -f /tmp/firebird*.rpm
 
+
+
 # Nous utiliserons (pour l'instant) un "bind" sur le host (docker run -v x:y) qui DOIT pointer sur cette variables
-# ENV "FB_DB_PATH=/srv/firebird"
+ENV "NAS_DB_PATH=/srv/nas"
+VOLUME ["$NAS_DB_PATH"]
 
 # Les logs FB (+ éventuellement Audit, etc...)
 VOLUME ["/var/log/firebird"]
 
-# La config FB pour NAS
+# La config FB
 VOLUME ["/etc/firebird"]
 
 # Data system (security.fdb, udf Novaxel, etc...)
 VOLUME ["/var/lib/firebird/system"]
+
 
 # Copy du fichier de configuration Firebird spécifique
 COPY firebird.conf /etc/firebird/
@@ -43,4 +47,6 @@ EXPOSE 60443/tcp
 
 USER firebird:firebird
 
-# ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
+ENTRYPOINT ["/usr/sbin/fbguard", "-pidfile /var/run/firebird/default.pid", "-daemon", "-forever"]
+
+USER root

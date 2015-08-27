@@ -7,9 +7,12 @@
 ########################################################################################################################
 
 
-FROM padouciel/nas-toolbox:latest
+#FROM padouciel/nas-toolbox:latest
+FROM novaxel/firebird:latest
 
 MAINTAINER Patrick DUBUIS <pdubuis@visiativ.com>
+
+USER root
 
 # On active la timezone France
 ENV TIMEZONE Europe/Paris
