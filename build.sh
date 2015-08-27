@@ -66,5 +66,10 @@ version=${2:-1}
 docker build -t "${repo}${imagename}:latest" "${image}/" && docker tag -f "${repo}${imagename}:latest" "${repo}${imagename}:${version}"
 
 # run the container with no
-[[ "${?}" -eq 0 && "${run}" -eq 1 ]] && echo "running docker container ${imagename}" &&  docker run ${run_args} --name="${imagename}" "${repo}${imagename}:${version}"
-
+if [[ "${?}" -eq 0 && "${run}" -eq 1 ]]
+then 
+	# Kill all container running from this iamge
+	docker rm -f "${imagename}"
+	echo "running docker container ${imagename}" 
+	docker run ${run_args} --name="${imagename}" "${repo}${imagename}:${version}"
+fi
