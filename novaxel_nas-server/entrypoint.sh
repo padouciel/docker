@@ -75,7 +75,7 @@ then
 	7za x /tmp/bibdemo-min.7z
 	chown -R firebird:firebird "${NAS_DB_PATH}"
 	sed -i -e 's|\(cBIB_REP=\)\(.*\);|\1'"'${NAS_DB_PATH}/demo/';"'|' /opt/novaxel/sql_domain/init_domain.xnov
-	sed -i -e 's|^\(.*demo2.*\s*;\)$|//\1|i' /opt/novaxel/sql_domain/init_domain.xnov
+	sed -i -e 's|\(.*demo2.*;\)|//\1|I' /opt/novaxel/sql_domain/init_domain.xnov
 	/opt/novaxel/novatools/bin/nscript /opt/novaxel/sql_domain/init_domain.xnov
 fi
 
