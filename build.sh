@@ -69,7 +69,7 @@ docker build -t "${repo}${imagename}:latest" "${image}/" && docker tag -f "${rep
 if [[ "${?}" -eq 0 && "${run}" -eq 1 ]]
 then 
 	# Kill all container running from this iamge
-	docker rm -f "${imagename}" || echo "No container bases on this images"
+	docker rm -f "${imagename}" > /dev/null 2>&1 || echo "No container bases on this images"
 	echo "running docker container ${imagename}" 
 	docker run ${run_args} --name="${imagename}" "${repo}${imagename}:${version}"
 fi
