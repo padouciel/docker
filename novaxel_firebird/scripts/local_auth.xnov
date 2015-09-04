@@ -1,0 +1,6 @@
+Const
+
+	// Il faut protéger convenablement ce fichier...
+	// Attention au changement de mot de passe
+	AdmNASLogin='Admin';
+	AdmNASHashedPasswd='0161E13F3124AE3455747B1A9ED78AA231253AE5C543CD28B9A6605835148299';

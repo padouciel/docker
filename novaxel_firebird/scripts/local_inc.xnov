@@ -1,0 +1,59 @@
+{
+#######################################################################################################
+	Pensez à initialiser ces constantes correctement pour votre site
+	Ce fichier est propre à chaque site et ne doit pas être synchronisé sur des sites en production
+#######################################################################################################
+}
+
+Const
+
+	// Hotes NAS par défaut
+	// Hôte utilisé si mode DEBUG (attention inconditionnel si non vide, ie les autres constantes DEFAULT_NAS_HOST* ne seront PAS prise en compte)
+	// Mettre à '' si non utilisé
+	NAS_DEFAULT_HOST_DEBUG='http://localhost:8000';
+	// Privilégié : HTTPS
+	NAS_DEFAULT_HOST_SSL='https://localhost';
+	// Secondaire HTTP
+	NAS_DEFAULT_HOST='http://localhost:8000';
+
+	// Comportement SSL par défaut
+	NAS_HOST_SSL_SELF_SIGNED_Ok=False;
+	NAS_HOST_SSL_VALID_CERTIF=False; // TODO Mettre à True en Prod....
+
+	// Chemin pointant vers un répertoire contenant les CA Racines
+	// attention, nécessaire sous Linux si la validation des certificats SSL est actives
+	NAS_SSL_CAPATH = '/etc/ssl/certs';
+
+	// Param SMTP par défaut
+	NAS_SMTP_HOST='localhost';
+	NAS_SMTP_PORT = '25';
+	NAS_SMTP_USER = '';
+	NAS_SMTP_PASSWD = '';
+	NAS_SMTP_SSLTYPE = 0;
+
+	// Emplacement cible de sauvegarde locale (duplication locale)
+	NAS_THIS_SAV_DEST='/tmp/bib_sav';
+
+	// Id Serveur FB correspondant au serveur en cours
+	NAS_THIS_FBSERVER=1;
+
+	// Path du binaire RSYNC
+	NAS_RSYNC_PATH='/usr/bin/rsync';
+
+	// Chemin et basename des logs de synchro
+	//LOGSAV_PATH='/var/log/novassav_#id#.log';
+	NAS_LOGSAV_PATH='/var/log/novasav_#id#.log';
+
+	// Chemin et basename des logs de synchro (ajouter ID lib ou autre à la fin)
+	NAS_LOGSYNC_PATH='/var/log/novasync_#id#.log';
+
+	NAS_STATS_DU_CLIENT='/srv/novaappserver/htdocs/du_client.csv';
+
+
+	{
+		RESTORATION
+	}
+	// Répertoire de base où trouver les sous-rep de restauration (1 sous-rep = 1 id lib)
+	NAS_RESTORE_DIR='/srv/novaappserver/htdocs/restore/';
+	// Path relatif à l'espace de restauration du serveur HTTP
+	NAS_RESTORE_HTTP_PATH='/restore';

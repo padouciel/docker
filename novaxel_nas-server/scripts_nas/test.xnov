@@ -1,0 +1,60 @@
+// Juste pour tester exec_script_url
+program test;
+
+{$I func_cloud.xnov}
+
+
+var
+    params : TScriptParams;
+	results: TScriptResult;
+    i:Integer;
+    fileresult:String;
+	oNasDomClient:TNasDomClient;
+
+Begin
+	params:=TScriptParams.Create();
+	fileresult:=extractfilepath(params.paramsFilename)+'result.json';
+	results:=TScriptResult.Create();
+	results.mimetype:='text/html';
+	AppendFichier('{',fileresult);
+
+	SetExitCode(1);
+
+// 	oNasDomClient:=TNasDomClient.Create();
+// 	if not NASConnect(oNasDomClient, GetNASHost('')) then exit;
+// 	//oNasDomClient.IsPasswdHashed:=true;
+// 	if not NASLogin(oNasDomClient,params.OwnerLogin,params.OwnerPasswd,True) then exit;
+	//AppendFichier('"ServerType":"' + oNasDomClient.ServerType + '"', fileresult);
+	//AppendFichier('"Logged":"' + oNasDomClient.loggedOwner.Name + '"', fileresult);
+
+	//if params.paramsList.count<>0 then AppendFichier(',' , fileresult);
+
+	For i :=0 to params.paramsList.count-1 do
+	Begin
+		AppendFichier('"' + params.paramsList.names[i] + '":"' + params.getValue(params.paramsList.names[i]) + '"', fileresult);
+		if i<params.paramsList.count-1 then
+			AppendFichier(',' , fileresult)
+//  		else
+//  		Begin
+//  			AppendFichier('"login":"' + params.OwnerLogin + '",' , fileresult);
+//  			AppendFichier('"password":"' + params.OwnerPasswd + '"' , fileresult);
+//  			AppendFichier(CRLF, fileresult);
+//  		End;
+	End;
+
+
+	AppendFichier('}',fileresult);
+	results.ResponseFile:=fileresult;
+	// DEBUG errmesg
+	//results.errmsg:='<p>test de retour en erreur</p>';
+	//writelnErr('test sortie en erreur');
+	//setexitcode(1);	
+
+	results.savetofile;
+	results.Free();
+	params.Free();
+	FreecloudRes;
+
+	SetExitCode(0);
+
+End.

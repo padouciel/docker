@@ -1,0 +1,161 @@
+{
+	Création V1
+
+	Mise à jour de l'utilisation disque par les bases des clients (seulement pour le serveur FB en cours)
+
+MAJ :
+- 15/05/2014 : vérificatin prise en compte de FULLTEXT.FDB (si présent)
+- 16/06/2014 : vérification sur tous les serveurs FB possbibles (connus du NAS en cours)
+}
+
+Program maj_du_client;
+{$I func_nas.xnov}
+{$I local_auth.xnov}
+
+
+var
+	ErrMsg:String;
+	ONasDomClient:TNasDomClient;
+	OFBServer:TFBServer;
+	i:Integer;
+	oLibs:TLibraries;
+	oLib:TLibrary;
+	SizeLib:extended;
+
+function GetDUBib(oLib:TLibrary):Int64;
+var
+	i:Integer;
+
+	oFDBFile:TFDBFile;
+	cFDBFiles:TFDBFiles;
+
+Begin
+
+	Result:=0;
+
+	Try
+
+		// Désactiver en V2, on vérifie sur tous les serveurs...
+// 		if Not FileExists(IncludeTrailingPathDelimiter(oLib.dbpath) + VOL_PRINC) then
+// 			RaiseException(erCustomError,'Le volume principal "' + IncludeTrailingPathDelimiter(oLib.dbpath) + VOL_PRINC + '" n''existe pas ; abandon du calcul de la  taille');
+
+		if not oLib.FDBFiles.load(false, true) then
+		Begin
+			RaiseException(erCustomError,'Impossible de récupérer la liste des volumes de la bibliothèque ' +  IntToStr(oLib.Id) + ' - Erreur : ' + TNasDomClient(oLib.NasDomClient).Errcode + ':' + TNasDomClient(oLib.NasDomClient).Errmsg);
+		End;
+
+		cFDBFiles:=oLib.FDBFiles;
+
+		oFDBFile:=TFDBFile.create(TNasDomClient(oLib.NasDomClient));
+
+		for i:=0 to cFDBFiles.count-1 do
+		begin
+// 			OutputErr('Récupération des informations détaillées du volume "' + IncludeTrailingPathDelimiter(oLib.dbpath) + cFDBFiles[i].name + '"');
+			oFDBFile.LibraryId:=cFDBFiles[i].LibraryId;
+			oFDBFile.name:=cFDBFiles[i].name;
+			oFDBFile.load(true);
+
+			Result:= Result + oFDBFile.size;
+//			OutputErr('Taille du volume ' + oFDBFile.name + ' : ' + Int64ToStr(oFDBFile.size) + ' - Taille cumulée : ' + Int64ToStr(Result));
+
+		End;
+
+	Except
+		OutputErr('L''erreur suivante s''est produite pendant le calcul de taille de la bibliothèque "' + oLib.Title + '" (' + Int64ToStr(oLib.Id) + ') : ' + ExceptionParam);
+		Result:=0;
+
+	Finally
+		if oFDBFile<>Nil then oFDBFile.free();
+		//if cFDBFiles<>Nil then cFDBFiles.free();
+
+	End;
+	
+	
+End;
+
+Begin
+
+	oNAsDomClient:=TNasDomClient.Create();
+
+	try  
+		if not NASConnect(oNasDomClient, GetNASHost('')) then
+		Begin
+			ErrMsg:='"Le serveur NAS n''est pas joignable !"';
+			exit;
+		End;
+
+		if not NASLogin(oNasDomClient, AdmNASLogin,AdmNASHashedPasswd, True) then 
+		Begin
+			ErrMsg:='"Impossible de se connecter au serveur NAS !"';
+			exit;
+		End;
+
+		GetNasParam(oNAsDomClient);
+
+		// Chargement des bibliothèques (seulement celles en state Ok par défaut)
+		ONasDomClient.libraries.AllStates:='&1';
+		ONasDomClient.libraries.load(True);
+		OLibs:=ONasDomClient.libraries;
+
+		oLib:=TLibrary.create(ONasDomClient);         
+
+		for i:=0 to OLibs.count-1 do
+		Begin
+
+			// Modif V2, on traite tous les serveurs à l'aide de TFBFiles...
+			// On ne traite que les librairies hebergées par le serveur en cours d'exécution du script...
+//			OutputErr('Itération i=' + IntToStr(i) + ' - Lib ' + Int64ToStr(OLibs[i].id) + ' : ' + OLibs[i].Title + ' - path : ' + OLibs[i].dbpath);
+
+// 			if (OLibs[i].fbserver_id=3) then //NAS_THIS_FBSERVER
+// 			if OLibs[i].id>=234 then
+//  			Begin
+				oLib.id:=OLibs[i].id;
+				oLib.load(True);
+
+				oFBServer:=NASGetFBServer(ONasDomClient, oLib.fbserver_id);
+				if oFBServer= Nil then
+				Begin
+					OutputErr('Traitement de la lib ' + Int64ToStr(OLib.id) + ' : Impossible de récupérer les informations du serveur FB ' + Int64ToStr(OLibs[i].fbserver_id));
+					Continue;
+				End;
+
+// 				OutputErr('Traitement Lib ' + Int64ToStr(OLib.id) + ' (' + oLib.Title + ') - sur le serveur FB : ' + Int64ToStr(oLib.fbserver_id) + ' (' + oFBServer.name + ')');
+				
+				// MAJ de la taille des volumes
+				SizeLib:=GetDUBib(oLib);
+				SizeLib:=int(round(SizeLib/(1024*1024))); // Taille stockée en Mo dans la base
+				// Ces 2 propriétés ne peuvent être mises à jour que depuis la version 23 de la BD domaine et 1.8.8 NAS !!!
+				// Si versions précédentes : erreur silencieuse (pas de drame, donc)
+				oLib.Size_mb:=Trunc(SizeLib); // Arrondi à la partie entière
+				oLib.Last_size_check:=now;
+				// doamin V39, on ne met PAS à jour la MODIF_DATE de la lib dans ce contexte...
+				oLib.NotUpdateModifDate:=true;
+				if not oLib.update then
+					OutputErr('!!! Mise à jour des informations de la library ' + Int64ToStr(oLib.id) +' impossible - Erreur : ' + oNAsDomClient.Errcode + ':' + oNAsDomClient.Errmsg);
+//  			End;
+		End;
+
+
+	Finally
+
+		if ErrMsg<>'' then
+		Begin
+			OutputErr(ErrMsg);
+			SetExitCode(1);
+		End;
+		Try
+			FreeNASRes;
+			if OLib<>Nil  then OLib.Free;
+			//if OLibs<>Nil then OLibs.Free;
+
+			if oNAsDomClient<>Nil then
+			Begin
+				oNasDomClient.domainLogout
+				oNasDomClient.Close;
+				oNAsDomClient.Free;
+			End;
+		Except
+		End;
+
+	End;
+End.

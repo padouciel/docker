@@ -1,0 +1,83 @@
+Program ExecScriptNAS;
+
+const
+  cURL='http://localhost:8000';
+  cDomain='DEMO';
+  cLogin='demoOwner';
+  cPasword='demo';
+
+  // PAth relatif (par rapport à SCRIPT_PATH du script NAS à tester
+  cScript='notification/ged-notification.xnov';
+//  cScript='exemples/helloworld.xnov';
+ 
+{  cDomain='admin';
+  cLogin='Admin';
+  cPasword='123';
+ }
+   
+var
+   oNasDomClient:TNasDomClient;
+   FileExt:string;
+   scriptparams:Tstringlist;
+//   StreamString:TstringStream;
+   Stream:TstringStream;
+   jsonResults:string;
+   buffer:string;
+   
+ Function Connect:boolean;
+   begin
+     Result:=False;
+     oNasDomClient:=TNasDomClient.create;
+     oNasDomClient.AcceptSelfSignedCertificate := True;
+       // si on veut bypasser la validation du certificat
+     oNasDomClient.RequiresCertificateValidation := False;
+     if not oNasDomClient.Connect(cURL) then
+     begin
+          output('Connexion NAS impossible sur ' + cURL);
+          output('error:' + oNasDomClient.Errcode + ',' + oNasDomClient.Errmsg);
+          oNasDomClient.Close;
+          exit;
+     end;
+     Result:=True;
+     Result:=oNasDomClient.domainLogin(cLogin,cPasword);
+     if not result then
+         output('error:' + oNasDomClient.Errcode + ',' + oNasDomClient.Errmsg)
+   end;  
+Begin
+     try
+       if not Connect then exit;
+       
+       scriptparams:=Tstringlist.create;
+       
+       // En fonciton du script à tester ;-)
+       
+       scriptparams.add('DECLENCHEUR=2');
+       scriptparams.add('DATE=2015-01-01');
+       //scriptparams.add('p2=Mathias');
+       Stream:=TStringstream.create('');
+       
+       if oNasDomClient.LoggedOwner.Gedparamvalues.AsBoolean['LICENCE','NOTIFICATION'] then output('OK');
+
+	   //if oNasDomClient.exec_script_url('exemples\testparam.xnov',scriptparams,stream,FileExt) then
+
+	   if oNasDomClient.exec_script(cScript,scriptparams,stream,FileExt,jsonResults) then
+       begin
+		   buffer:=Stream.dataString;
+		   output('Stream : ' + buffer);
+		   output('json :' + CRLF + jsonResults);
+       end
+	   else
+		 Begin
+			output('KO');
+			output('error:' + oNasDomClient.Errcode + ',' + oNasDomClient.Errmsg);
+		End;
+       
+       Stream.free;
+       scriptparams.free;
+                    
+     finally
+        oNasDomClient.domainLogout;
+        oNasDomClient.Close;
+        oNasDomClient.free;
+     end;
+End.

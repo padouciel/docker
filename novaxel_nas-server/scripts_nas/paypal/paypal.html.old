@@ -1,0 +1,9 @@
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html><head>
+<title>PAYPAL NOVAXEL</title>
+</head><body>
+<h1>Paypal Novaxel</h1>
+<p>Cher Monsieur, voici vos informations de paiement :</p>
+%param1%
+<p>Le serveur d'application de NOVAXEL vous informe que votre paiement a bien &eacute;t&eacute; enregistr&eacute;.</p>
+</body></html>

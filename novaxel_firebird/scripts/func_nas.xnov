@@ -1,0 +1,709 @@
+{
+	Fonctions communes pour accès au NAS
+}
+
+// Inclulde des constantes PROPRES au site (ne pas synchroniser ce fichier en prod...)
+{$I local_inc.xnov}
+
+
+Const
+
+{
+#######################################################################################################
+	Constantes internes à ne PAS modifier sauf spécifications Support Technique/RAD Novaxel
+#######################################################################################################
+}
+
+	// Niveaux de logs
+	LOG_INFO=0;
+	LOG_ERROR=1;
+	LOG_DEBUG=2;
+	LOG_WARNING=3;
+	
+	// URI d'accès au service de base NAS (get_infos)
+	NASSERVICE_URI='nasnovaxel';
+
+	// Type de retour pour BoolToStr :
+	BOOLNUM=0;
+	BOOLSTR=1;
+
+	// Pattern de recherche  des volumes Novaxel
+	VOL_PATTERN='VOL*.FDB';
+
+	// Ajout proto V8 : Nom de volume FULLTEXT...
+	VOL_FULLTEXT='FULLTEXT.FDB';
+
+	// Fichier flag bloquant la sauvegarde en cours d'étape critique de synchro
+	// Typiquement déposé par la procédure de synchro durant les étapes sensibles (gfix|nbackup, etc)
+	// Un volume FDB ne peut pas être sauvegardé à ce moment là (état inconsistant probable)
+	FLAG_SYNC_CRIT='.sync_crit';
+
+	//Fichier flag de sauvegarde (positionné dans le répertoire de la base de donnée du client) :
+	// Empêche une synchro si présent
+	FLAG_SAV='.sav';
+
+	//Paramètres domaine à récupérer pour l'état RESTORE
+	DOM_REST_STATE_S='DOMAIN';DOM_REST_STATE_N='RESTORE';
+
+var
+{
+	variables pour SysRun
+}
+	SysRunErrorLevel: integer;
+	SysRunErrorMessage: TStringList;
+	SysRunOutput: TStringList;
+
+	// GetHostname...
+	hostname:String;
+
+	// Variable Hostname par défaut (2éme appel GetNASHost et +)
+	NAS_HOST:String;
+
+	// Volume principal Novaxel (Récupérée en TDOMPARAM)
+	VOL_PRINC:String;
+
+
+Procedure outputErr(chaine:string);
+begin
+	try 
+		{$IFDEF CONSOLE}
+			writelnErr(chaine);
+		{$ELSE}
+			memo.lines.add(chaine);
+		{$ENDIF}
+	Except
+	Finally
+	End;
+End;
+
+Procedure output(chaine:string);
+begin
+	try 
+		{$IFDEF CONSOLE}
+			writeln(chaine);
+		{$ELSE}
+			memo.lines.add(chaine);
+		{$ENDIF}
+	Except
+	Finally
+	End;
+End;
+
+function Iif(expr:boolean;IfTrue:Variant ; IfFalse: Variant):Variant;
+Begin
+	if expr then result := IfTrue Else result := IfFalse;
+End;
+
+{
+	Renvoie une chaine exprimant une valeur  booléenne
+	Si Type = BoolNum (0) : 0/1
+	Si Type = BoolStr (1) : True/False
+}
+Function BoolToStr(Val:Boolean;RetType:Integer):String;
+Begin
+	case RetType of
+		0: Result:=iif(Val,'1','0');
+		1: Result:=iif(Val,'True','False');
+	Else
+		RaiseException(ErTypeMismatch,'Le paramètre RetType ne peut-être que BOOLNUM (' + intToStr(BOOLNUM) + ') ou BOOLSTR ' + intToStr(BOOLSTR) + ')');
+	End;
+End;
+
+{
+	Renvoie l'hôte NAS par défaut en se basant sur les principes suivants :
+	1) On tente une connexion avec l'hôte passé si présent (Attention renvoie '' si Host non valide et SANS tester les hôtes par défaut)
+	2) Sinon, on tente une connexion avec la constante NAS_DEFAULT_HOST_SSL
+	3) Sinon, on tente une connexion avec la constante NAS_DEFAULT_HOST
+
+	On renvoie la première chaine correspondante à cet ordre ou '' si aucune n'est possible
+}
+Function GetNASHost(PrivNASHost:String):String;
+Var
+	oNasDomClient:TNasDomClient;
+Begin
+	oNasDomClient:=TNasDomClient.Create();
+
+	oNasDomClient.AcceptSelfSignedCertificate := NAS_HOST_SSL_SELF_SIGNED_OK;
+	oNasDomClient.RequiresCertificateValidation := NAS_HOST_SSL_VALID_CERTIF;
+
+    if (oNasDomClient.RequiresCertificateValidation) then
+    begin
+      oNasDomClient.ClientHttp.CAcertsPath := NAS_SSL_CAPATH;
+      oNasDomClient.ClientHttp.loadCAcertificates;
+    end;
+
+	if PrivNASHost<>'' then
+	Begin
+
+		// On tente une connexion sur l'hôte passé en paramètre
+		if oNasDomClient.Connect(PrivNASHost) then
+			result:=PrivNASHost
+		else
+			Result:='';
+	End
+	Else
+	Begin
+		// En mode DEBUG, on se connecte sur un hôte précis si défini (http://localhost par défaut)
+		{$IFDEF DEBUG}
+			if NAS_DEFAULT_HOST_DEBUG<>'' then
+			Begin
+				result:=NAS_DEFAULT_HOST_DEBUG;
+				exit;
+			End;
+		{$ENDIF}
+
+		// Variable globale déjà positionnée => URL déjà initialisée, donc Ok
+		if NAS_HOST<> '' then
+		Begin
+			Result:=NAS_HOST;
+		End
+		Else
+		Begin
+			// On essai d'abord avec le serveur par défaut SSL
+			if oNasDomClient.Connect(NAS_DEFAULT_HOST_SSL) then
+			Begin
+				NAS_HOST:=NAS_DEFAULT_HOST_SSL;
+			End
+			Else
+			Begin
+				// On essaie le serveur par défaut sans SSL
+				if oNasDomClient.Connect(NAS_DEFAULT_HOST) then
+				Begin
+					NAS_HOST:=NAS_DEFAULT_HOST;
+				End
+				Else
+				Begin
+					NAS_HOST:='';
+				End;
+			End;
+		End;
+		Result:=NAS_HOST;
+	End;
+
+	oNasDomClient.Free();
+End;
+
+{
+	Lance une commande système
+}
+function SysRun(cmd:String; params:String): boolean;
+var
+	oRun:TRun;
+begin
+	oRun:=TRun.create();
+	oRun.outputList:=TstringList.create();
+	oRun.Filename:= cmd;
+	oRun.wait:=true;
+	oRun.parameters:=params;
+	oRun.Start();
+
+	SysRunErrorLevel:=oRun.errorlevel;
+	result:=SysRunErrorLevel = 0;
+	SysRunErrorMessage:=oRun.errorList;
+	SysRunOutput:=oRun.outputList;
+	oRun.free;
+end;
+
+function GetHostname(): string;
+	// TODO : hostname (pour l'instant avec TRun, mais à terme devrait être plus portable, ie. Windows toutes versions...)
+begin
+	if (hostname= '') then
+	begin
+		if SysRun('hostname','') then
+			result:=SysRunOutput[0]
+		else
+			result:='localhost'
+	End
+	Else
+	begin
+		result:=hostname;
+	End;
+End;
+	
+
+{
+    Permet d'enregistrer un message de journalisation dans un fichier
+    Le script appelant doit avoir initialisé une directive DEBUG pour enregistrer effectivement les messages de niveau DEBUG, ie :
+    $DEFINE DEBUG (+ accolades)
+    Les niveaux INFO, WARNING et ERROR sont toujours enregistrés
+}
+procedure logger(msg:string; caller:String; LogLevel:integer; FileLog:String);
+var
+	level:string;
+begin
+
+	// Pas de debug, on sort incondtionnelement si le niveau du message est DEBUG...
+	{$IFNDEF DEBUG}
+		if LogLevel=LOG_DEBUG then exit;
+	{$ENDIF}
+
+	case Loglevel of
+		LOG_INFO: level:='[INFO] : ';
+		LOG_ERROR: level:='[ERREUR] : '; // Erreur fatale
+		LOG_WARNING: level:='[WARNING] : '; // Erreur non fatale
+		LOG_DEBUG: level:='[DEBUG] : ';
+	Else
+		RaiseException(ErTypeMismatch,'Le paramètre level ne peut-être que LOG_INFO (' + intToStr(LOG_INFO) + '), LOG_ERROR (' + intToStr(LOG_ERROR) + '), LOG_WARNING (' + intToStr(LOG_ERROR) + ') ou LOG_DEBUG ' + intToStr(LOG_DEBUG) + ')');
+	End;
+
+	// Renvoi une erreur 
+	if not AppendFichier(
+		FormatDateTime('yyyy-mm-dd hh:nn:ss', now)
+		+ ' ' + GetHostname + ': ' + JustName(FichierScript) + ' - ' + caller + ' : '
+		+ level
+		+ msg
+		+ CRLF,
+		FileLog
+	) then
+	Begin
+		RaiseException(erCustomError, 'Impossible d''ajouter un message dans le fichier "' + FileLog + '"');
+	End;
+
+End;
+
+{
+	Enregistrement d'un message de log dans le fichier de log client NAS (ie : fichier novaappserver_client.log)
+}
+Procedure logger_NAS(oNasDomClient:TNasDomClient; msg:string; caller:String; LogLevel:integer);
+var
+	level:string;
+begin
+
+	// Pas la peine de continuer, on continue silencieusement
+	if (oNasDomClient=Nil) then exit;
+	if (oNasDomClient.loggedOwner=Nil) then exit;
+
+
+	// Pas de debug, on sort incondtionnelement si le niveau du message est DEBUG...
+
+	case Loglevel of
+		LOG_INFO: level:='[INFO] : ';
+		LOG_ERROR: level:='[ERREUR] : '; // Erreur fatale
+		LOG_WARNING: level:='[WARNING] : '; // Erreur non fatale
+		LOG_DEBUG: level:='[DEBUG] : ';
+	Else
+		RaiseException(ErTypeMismatch,'Le paramètre level ne peut-être que LOG_INFO (' + intToStr(LOG_INFO) + '), LOG_ERROR (' + intToStr(LOG_ERROR) + '), LOG_WARNING (' + intToStr(LOG_ERROR) + ') ou LOG_DEBUG ' + intToStr(LOG_DEBUG) + ')');
+	End;
+
+	// Il faut-être logué pour écrire...
+	if (oNasDomClient.loggedOwner.logged) then
+	Begin
+		if not oNasDomClient.log(
+			GetHostname + ': ' + JustName(FichierScript) + ' - ' + caller + ' : '
+			+ level
+			+ msg
+			) then
+			RaiseException(erCustomError, 'Impossible d''ajouter un message dans le log NAS client : Erreur NAS : ' + oNasDomClient.Errcode + '-' + oNasDomClient.Errmsg + 'et/ou erreur runtime : ' + ExceptionParam);
+
+// 	End
+// 	Else
+// 	Begin
+// 		RaiseException(erCustomError, 'L''objet "oNasDomClient" passé n''est pas correctement instancié');
+	End;
+
+
+end;
+
+
+{
+	Fonction de connexion au NAS :
+	Attend :
+	- oNasDomClient une instance de TNasDomClient
+	- URL : URL de connexion au serveur
+}
+function NASConnect(oNasDomClient:TNasDomClient; URL:string):boolean;
+begin
+
+	oNasDomClient.AcceptSelfSignedCertificate := NAS_HOST_SSL_SELF_SIGNED_Ok;
+	oNasDomClient.RequiresCertificateValidation := NAS_HOST_SSL_VALID_CERTIF;
+	//oNasDomClient.RequiresCertificateValidation := True;
+
+    if (oNasDomClient.RequiresCertificateValidation) then
+    begin
+      oNasDomClient.ClientHttp.CAcertsPath := NAS_SSL_CAPATH;
+      oNasDomClient.ClientHttp.loadCAcertificates;
+    end;
+	result:=oNasDomClient.Connect(URL);
+end;
+
+
+{
+	Récupère les paramètres généraux APRÈS une connexion sur la NAS
+	TODO : Voir pour faire mieux...
+}
+Function GetNasParam(oNasDomClient:TNasDomClient):Boolean;
+Begin
+	Result:=True;
+
+	try
+		VOL_PRINC:=oNasDomClient.GEDFilename;
+		if trim(VOL_PRINC) = '' then
+		Begin
+			RaiseException(erCustomError,'Impossible d''initialiser les paramètres généraux du NAS');
+		End;
+	Except
+		Result:=False;
+	End;
+End;
+
+
+
+{
+	Fonction de login au NAS :
+	Attend :
+	- oNasDomClient une instance de TNasDomClient
+	- Login : un login NAS
+	- isPasswdHashed : bolean True si le mot de passe utilisé est déjà hashé (ie. passé directement sous forme d'empreinte SHA 256)
+}
+function NASLogin(oNasDomClient:TNasDomClient; login:string; password:string; isPasswdHashed:boolean):boolean;
+begin
+	oNasDomClient.IsPasswdHashed:=isPasswdHashed;
+	result:=oNasDomClient.domainLogin(Login,Password);
+end;
+
+{
+	Fonction d'instanciation de librairie :
+	Attend :
+	- oNasDomClient une instance de TNasDomClient
+	- LibId : integer un Id bibliothèque
+}
+function NASGetLib(oNasDomClient:TNasDomClient; libId:integer):TLibrary;
+begin
+	// Si le Owner en cours est un admin, on récupère les libraries globalement
+	if oNasDomClient.loggedOwner.IsAdmin then
+	Begin
+		oNasDomClient.libraries.load(true);
+		result:=oNasDomClient.libraries.getfromid(libID);
+
+	End
+	Else
+	Begin
+		// Chargement des lib du Owner en cours
+		oNasDomClient.loggedOwner.libraries.load(true);
+		result:=oNasDomClient.loggedOwner.libraries.getfromid(libID);
+	End;
+end;
+
+{
+	Fonction d'instanciation de Serveur FB :
+	Attend :
+	- oNasDomClient une instance de TNasDomClient
+	- FBServerId : integer un Id FBServer
+}
+function NASGetFBServer(oNasDomClient:TNasDomClient; FBServerId:integer):TFBServer;
+begin
+	// Chargement des lib du Owner en cours
+	oNasDomClient.FBServers.load(False);
+	// Récupération directe de la lib recherchée
+	result:=oNasDomClient.FBServers.GetFromID(FBServerId);
+end;
+
+{
+	Fonction d'instanciation de Owner :
+	Attend :
+	- oNasDomClient une instance de TNasDomClient
+	- OwnerId : integer un Id Woner
+}
+function NASGetOwner(oNasDomClient:TNasDomClient; OwnerId:integer):TOwner;
+begin
+	// Chargement des lib du Owner en cours
+	oNasDomClient.Owners.load(False);
+	// Récupération directe de la lib recherchée
+	result:=oNasDomClient.Owners.GetFromID(OwnerId);
+end;
+
+{
+	Récupération de la valeur d'un paramètre domaine :
+	Attend :
+	- oNasDomClient une instance de TNasDomClient
+	- SECTION/NAME : élément de récupération du paramètre
+	- ValueParam : PlaceHolder de la valeur du paramètre
+	- ValBlb : PlaceHolder de la valeur du blob du pramètre
+}
+function NASGetDomParamValues(oNasDomClient:TNasDomClient; Section, Name:String;var ValueParam:String;ValBlb:TStringStream):boolean;
+var
+	oDomParam:TDomParam;
+begin
+	Result:=False;
+
+	// Chargemement de la liste des paramètres
+	Result:=oNasDomClient.domParams.Load(True);
+	
+
+	if not Result then exit;
+
+	oDomParam:=oNasDomClient.DomParams.get(Section,Name);
+
+	if oDomParam = Nil then
+	Begin
+		Result:=False;
+		exit;
+	End;
+
+ 	if oDomParam.ValueBlobFilled then
+ 		oDomParam.GetBlobValue(ValBlb);
+
+	ValueParam:=trim(oDomParam.Value);
+
+	Result:=True;
+
+end;
+
+
+Function SendMail(
+	Objet:string;
+	lDestinataires:TStringList;
+	Body:string;
+	lFichiers:TstringList;
+	Expediteur:String; // from
+	lInfo:TStrings
+	):boolean;
+{
+	SSLType : smtpTlsNone,  smtpTlsImplicit,  smtpTlsExplicit
+	Authentification : smtpAuthNone,smtpAuthPlain,smtpAuthLogin, smtpAuthCramMD5,smtpAuthCramSha1,smtpAuthNtlm,smtpAuthAutoSelect
+}
+var
+	LBody:TStringList;
+
+begin
+	
+	//Transformation du Body en TStringList - On a pas idée de faire des choses comme ça :-(
+	LBody:=TStringList.create();
+	lBody.text:=Body;
+
+	// Expéditeur par défaut
+	if trim(Expediteur) = '' then Expediteur:='root@' + GetHostname;
+
+	Result:= SendMailSSL(
+		NAS_SMTP_HOST,
+		NAS_SMTP_PORT,
+		Expediteur,
+		Objet,
+		lDestinataires, //lDestinataires,
+		lBody,
+		lFichiers,
+		lInfo,
+		NAS_SMTP_USER,
+		NAS_SMTP_PASSWD,
+		NAS_SMTP_SSLTYPE,
+		0 // Non utilisé
+	);
+
+	lBody.free();
+end;
+
+{
+	Parser de texte (à la sprintf) qui attend, un texte (body de message par exemple) contenant des variables encadrées par des Delim
+	Chaque variable est associé à un Item en TStringList
+	LstVar DOIT être un Tstringlist de la forme : key=valeur
+	Renvoie le Text parsé en cas de réussite ou '' en cas d'erreur...
+	Si WithError est true, on lève une erreur si toutes les variables présentens dans Text ne sont pas trouvées dans LstVar
+}
+Function ParseText(Text,Delim:String;LstVar:TstringList;WithError:boolean):String;
+var
+	i:Integer;
+	TempVals:TStringList;
+
+Begin
+	Result:=Text;
+	Try
+		For i:=0 to LstVar.count-1 do
+			Result:=
+				StrReplace(
+					Result,
+					Delim + LstVar.names[i] + Delim, 
+					LstVar.Values[LstVar.names[i]]
+				);
+
+		TempVals:=TstringList.create();
+		SplitRegExpr(Delim, Result, TempVals);
+
+		if WithError Then
+		Begin
+			//outputErr('Valeur de tempVals : ' + TempVals.Text);
+			if TempVals.count > 1 then
+				RaiseException(erOutOfGlobalVarsRange, 'La variable "' + TempVals[1] +'" n''a pas été trouvée dans LstVal');
+			TempVals.Free();
+		End;
+{ // À revoir (supprime tout...)
+		Else // On efface toutes les valeurs qui n'ont pas été trouvées (nettoyage)
+			Result:=ReplaceRegExpr(delim + '.*' + delim ,Result,'',true);
+} 
+	Except
+		Result:='';
+		//outputErr(ExceptionParam);
+		RaiseLastException;
+
+	End;
+End;
+
+
+{
+	Renvoie le premier répertoire d'un path donné
+	Sans délimiteur (ni avant ni après) ni lecteur ...
+}
+Function GetFirstDir(Path:String):String;
+ var
+    lpart:Tstringlist;
+    i:integer;
+ begin
+	lpart := SplitStr(Path, clPathDelim);
+	for i:=0 to lpart.count-1 do
+	begin
+		// On ne peut pas utiliser clDriveDelim pour rechercher un identifiant de lecteur car clDriveDelim est '' sous Unix, etc.
+		if (lpart[i]<>'') and (Pos(':',lpart[i])=0)  then
+		begin
+			Result:=lpart[i];
+			break;
+		end;
+	end;
+	lpart.free;
+End;
+
+
+{
+	Retourne un TStringList correspondant à la liste des volumes d'une bibliothèque (canonique) + Taille des volumes (si demandé)
+	La première ligne du STringList correspond au total des volumes de la lib (si demandé), ie. : chaine vide=-1 ou >0
+}
+Function GetLibVolNovaInfos(oLib: TLibrary; WithSize: Boolean):TStringList;
+Var
+	cFDBFiles:TFDBFiles;
+	//oFDBFile:TFDBFile;
+	i:Integer;
+
+
+Begin
+	Try
+		//cFDBFiles:=TFDBFiles.Create();
+
+		if not oLib.FDBFiles.Load(WithSize,True) then RaiseException(erCustomError,'Impossible de charger la liste des volumes pour la library "' + Int64ToStr(oLib.id) + '" : ' + TNasDomClient(oLib.NasDomClient).Errcode + ':' + TNasDomClient(oLib.NasDomClient).Errmsg);
+
+		cFDBFiles:=oLib.FDBFiles;
+
+		Result:=TStringList.Create();
+
+		// Ajout de la taille totale
+		Result.Add('' + '=' + Int64ToStr(cFDBFiles.TotalSize));
+
+		for i:=0 to cFDBFiles.count-1 do
+			Result.add(IncludeTrailingPathDelimiter(cFDBFiles[i].path) + cFDBFiles[i].name + '=' + Int64ToStr(cFDBFiles[i].size));
+
+		Result.Sort;
+	
+	Except
+		Result:=Nil;
+		RaiseLastException;
+	Finally
+	End;
+End;
+
+{
+	Retourne une liste des volumes Novaxle (NOVAXEL.FDB + VOL*.FDB + FULLTEXT.FDB) présents dans un répertoire donné
+}
+Function GetVolNovaDir(dir: string):TStringList;
+
+Begin
+	Try
+		Result:=TStringList.Create();
+		Result:=ChargeListeFichiers(dir,VOL_PATTERN,0,False);
+		if FileExists(IncludeTrailingPathDelimiter(dir) + VOL_PRINC) then
+			Result.add(IncludeTrailingPathDelimiter(dir) + VOL_PRINC);
+		if FileExists(IncludeTrailingPathDelimiter(dir) + VOL_FULLTEXT) then
+			Result.add(IncludeTrailingPathDelimiter(dir) + VOL_FULLTEXT);
+
+		Result.sort;
+	Except
+		Result.Free();
+		Result:=Nil;
+	End;
+End;
+
+
+
+{
+	Renvoie le nom de fichier (canonique) du dernier volume d'un répertoire library...
+}
+Function GetLastVolume(dir:String):String;
+var
+	lstFichiers:Tstringlist;
+Begin
+
+	lstFichiers:=Tstringlist.Create();
+
+	try
+		lstFichiers:=ChargeListeFichiers(dir,VOL_PATTERN,0,False);
+		lstFichiers.sort; // TODO : Vérifier que cela trie bien dans l'ordre croissant...
+		if lstFichiers.count<1 then
+			Result:=''
+		else
+			Result:=ExpandFileName(lstFichiers[lstFichiers.count-1]);
+	Finally
+		lstFichiers.Free();
+	End;
+End;
+
+{
+	Retoune le volume (en octet) occupé par les volumes Novaxel (NOVAXEL.FDB + VOL*.FDB + FULLTEXT.FDB) dans un répertoire donné
+}
+Function GetVolNovaDirSize(dir: string):int64;
+var
+	lstFiles:TStringList;
+	i:integer;
+
+Begin
+	Try
+		lstFiles:=TStringList.Create();
+		lstFiles:=ChargeListeFichiers(IncludeTrailingPathDelimiter(dir),VOL_PATTERN,0,False);
+		for i:=0 to lstFiles.count-1 do
+			Result:=Result + GetFileSize(lstFiles[i]);
+
+		if FileExists(IncludeTrailingPathDelimiter(dir) + VOL_PRINC) then
+			Result:=Result + GetFileSize(IncludeTrailingPathDelimiter(dir) + VOL_PRINC);
+		if FileExists(IncludeTrailingPathDelimiter(dir) + VOL_FULLTEXT) then
+			Result:=Result + GetFileSize(IncludeTrailingPathDelimiter(dir) + VOL_FULLTEXT);
+
+	Except
+		Result:=0;
+	Finally
+		if lstFiles<>Nil then lstFiles.Free();
+	End;
+End;
+
+
+{
+	Libération des ressources utilisées par ce script complet...
+	Doit être appelé par les scipts utilisateurs (typiquement en fin de script)
+}
+Procedure FreeNASRes;
+Begin
+	Try
+		if SysRunOutput <> Nil then SysRunOutput.Free();
+		if SysRunErrorMessage<>nil then SysRunErrorMessage.Free();
+	Except
+
+	End;
+
+End;
+
+{
+	Compare un ensemble de STATE (StateGrp) avec un state atomique et renvoie True/False en fonction de l'opérateur
+	similaire à la PS GET_STATE_CRITERI de la base domaine)
+	Comp :
+        "=" pour "égal" (correspondance atomique dans la colonne cible),
+        "#" pour "différent" (non correspondance atomique dans la colonne cible)
+        "~" pour "correspond" (correspondance non atomique  dans la colonne cible, donc renvoi les enregistrements ayant les valeurs activées et d'autres)
+        "&" pour "ne correspond pas" (non correpondance non atomique  dans la colonne cible, donc renvoi les enregistrements ayant les valeurs activées et d'autres)
+        "*" pour aucun critère (nécessaire car, par défaut, les appelants initialise l'état à 0 et qu'il faut leur donner un moyen de demander tous les enregistrements)}
+Function GetStateCompare(StateGrp:Integer;Comp:String;StateToFound:Integer):boolean;
+Begin
+	Result:=False;
+
+	Case Trim(Comp) of
+	'=':Result:=StateGrp = StateToFound;
+	'#':Result:=StateGrp <> StateToFound;
+	'~':Result:=StateGrp and StateToFound <> 0;
+	'&':Result:=StateGrp and StateToFound = 0;
+	else
+		RaiseException(ErOutOfRange, 'Le paramètre "Comp" de La Function GetStateCompare ne peut-être que "=" pour "égal", "#" pour "différent", "~" pour "correspond" et "&" pour "ne correspond pas"');
+	End;
+End;

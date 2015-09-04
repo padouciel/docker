@@ -1,0 +1,265 @@
+{
+	Renvoie une liste de contact sous la forme d'un fichier CSV
+	- Si type_contact est fourni en paramètre, il est est pris en compte
+
+
+Pour la mise en place de ce stypes de contact...
+SET TERM ^ ;
+EXECUTE BLOCK
+RETURNS (
+    RESULT VARCHAR(8000)
+)
+AS
+    -- Type contact "Marketing"
+    DECLARE CTMARKET_ID INTEGER;
+    -- Contact principal
+    DECLARE TC_ID INTEGER;
+BEGIN
+
+    UPDATE OR INSERT INTO TCONTTYPE ("NAME") VALUES('Marketing') MATCHING ("NAME");
+    SELECT TCONTTYPE.ID FROM TCONTTYPE WHERE TCONTTYPE.NAME='Marketing' INTO CTMARKET_ID;
+
+    FOR SELECT TOWNER.TCONTACT_ID
+    FROM 
+        TOWNER
+        INNER JOIN
+            TCONTACT ON TOWNER.TCONTACT_ID=TCONTACT.ID
+            LEFT JOIN TGEDUSER
+                ON TCONTACT.ID=TGEDUSER.TCONTACT_ID
+    WHERE
+        -- Contact principal présent...
+        TOWNER.TCONTACT_ID IS NOT NULL
+        -- Onwer non supprimé
+        AND BIN_AND(TOWNER.STATE,1)=0
+        -- Contact non supprimé
+        AND BIN_AND(TCONTACT.STATE,1)=0
+        -- GEDUSER associé non deleted
+        AND (BIN_AND(TGEDUSER.STATE,1)=0 OR TGEDUSER.STATE IS NULL)
+    INTO :TC_ID DO
+    BEGIN
+        INSERT INTO TCONTOWNER VALUES(:TC_ID, :CTMARKET_ID);
+        RESULT=:TC_ID || ' Passé en Type Marketing';
+        SUSPEND;
+        WHEN SQLCODE -803 DO
+        BEGIN
+            /* Ignore */
+            RESULT=:TC_ID || ' était déjà en Type Marketing';
+            SUSPEND;
+        END
+    END
+
+END ^
+SET TERM ; ^
+}
+program test;
+
+{$I func_cloud.xnov}
+
+Const
+	CALLER='get_contact_list';
+	cTypeContact='Marketing';
+
+var
+    SCParams : TScriptParams;
+	SCResults: TScriptResult;
+    i,j, y :Integer;
+    fileresult:String;
+	oNasDomClient:TNasDomClient;
+	infra: String;
+
+// 	oOwners:TOwners;
+// 	OContacts:TContacts;
+// 	OContact:TContact;
+
+	OContType:TContType;
+	OFBServer:TFBServer;
+
+	TypeContact:String;
+
+	NbCont:Integer;
+	x:String;
+
+// Renvoie true si au moins une lib est située sur le serveur donnée
+Function OwnerHaveLibInFBServer(Owner:TOwner; FBServer:TFBServer):Boolean;
+var
+	i:Integer;
+Begin
+	Result:=False;
+
+	Owner.Libraries.Load(true);
+	for i:=0 to Owner.Libraries.Count -1 do
+		if Owner.Libraries[i].FbServer_Id=FBServer.Id then
+		Begin
+			Result:=true;
+			exit;
+		End;
+End;
+
+
+Begin
+	SCParams:=TScriptParams.Create();
+	SCResults:=TScriptResult.Create();
+
+	SetExitCode(1);
+
+	if SCParams.paramsFilename='' then
+	Begin
+		OutputErr('Script appelé hors contexte NAS exec_script');
+		exit;
+	End;
+
+	Try
+
+		oNasDomClient:=TNasDomClient.Create();
+
+		if not NASConnect(oNasDomClient, GetNASHost('')) then
+		Begin
+			SCResults.errmsg:='Impossible de joindre le serveur NAS  ; merci de contacter votre service technique';
+			Exit;
+		End;
+
+//		if not NASLogin(oNasDomClient, SCParams.OwnerLogin,SCParams.OwnerPasswd, true) then 
+		if not NASLogin(oNasDomClient, SCParams.OwnerLogin,SCParams.OwnerPasswd, False) then 
+		Begin
+			SCResults.errmsg:='Impossible de se connecter au serveur NAS ; merci de contacter votre service technique';
+			exit;
+		End;
+
+		logger_NAS(oNasDomClient,'===============================================================================', CALLER, LOG_INFO);
+		logger_NAS(oNasDomClient,'Lancement de "' + CALLER + '"', CALLER, LOG_INFO);
+
+		// Type contact passé en paramètre
+		TypeContact:=Trim(SCParams.getValue('cont_type'));
+
+		// Par défaut...
+		if TypeContact='' then TypeContact:=cTypeContact;
+
+		logger_NAS(oNasDomClient,'Type de contact à traiter : ' + TypeContact, CALLER, LOG_INFO);
+
+ 		oNasDomClient.ContTypes.load(False);
+		if (TypeContact<>'') and (TypeContact<>'owner') then
+		Begin
+			OContType:=oNASDomClient.ContTypes.find(TypeContact);
+			if OContType= Nil then
+			Begin
+				SCResults.errmsg:='Le type de contact "' + TypeContact + '" n''existe pas';
+				Exit;
+			End;
+			
+		End;
+
+		infra:=Trim(SCParams.getValue('infra'));
+		if infra <>'' then
+		Begin
+			logger_NAS(oNasDomClient,'Infra à traiter : ' + infra, CALLER, LOG_INFO);
+			oNasDomClient.FBServers.load(False);
+			OFBServer:=oNASDomClient.FBservers.Find(infra);
+			if OFBServer= Nil then
+			Begin
+				SCResults.errmsg:='L''infra correspondante au serveur "' + infra + '" n''existe pas';
+				Exit;
+			End;
+			
+		End;
+
+		fileresult:=extractfilepath(SCParams.paramsFilename)+'contacts.csv';
+		Deletefile(fileresult);
+
+		// Recherche de tous les contacts du domaine en passant par les owners
+		// On charge les Owners visibles par défaut
+		// ONasDomClient.owners.AllStates:='&1';
+		oNasDomClient.Owners.load(true);
+// 		oContacts:=TContacts.Create(ONasDomClient,Nil);
+// 		oContacts.AllStates:='&1';
+// 		oContacts.load(true);
+
+		for i:=0 to oNasDomClient.Owners.count-1 do
+		Begin
+			//logger_NAS(oNasDomClient,'Traitement du Owner ' + oNasDomClient.Owners[i].subdomain, CALLER, LOG_INFO);
+			// Prise en compte de tous les contacts (contacts principaux Owner aussi)
+			oNasDomClient.Owners[i].contacts.Allcontacts:=True;
+			oNasDomClient.Owners[i].contacts.load(False);
+
+			// Filtrage sur serveur (infra)
+			if OFBServer<>Nil then
+			begin
+				if Not OwnerHaveLibInFBServer(oNasDomClient.Owners[i], oFBServer) then Continue;
+			End;
+
+			// Cas particulier pour les contacts principaux
+			if TypeContact='owner' then
+			Begin
+				if oNasDomClient.Owners[i].Contact.email<>'' then
+					AppendFichierUTF8(oNasDomClient.Owners[i].Contact.Prefix + ';' + oNasDomClient.Owners[i].Contact.Firstname + ';' + oNasDomClient.Owners[i].Contact.Name + ';' + oNasDomClient.Owners[i].Contact.Email + ';' + oNasDomClient.Owners[i].subdomain + ';' + oNasDomClient.Owners[i].external_id + CRLF, fileresult);
+					NbCont:=NbCont+1;
+					Continue;
+			End;
+			
+			// Sinon, on traite le type de contact normalement
+			for j:=0 to oNasDomClient.Owners[i].contacts.count-1 do
+			Begin
+// 				oContact:=oContacts[j];
+
+				if Trim(oNasDomClient.Owners[i].contacts[j].EMail)<>'' then
+				Begin
+
+// 					logger_NAS(oNasDomClient,'	Traitement du Contact ' +Int64ToStr(oNasDomClient.Owners[i].contacts[j].id) + ' : ' + oNasDomClient.Owners[i].contacts[j].name, CALLER, LOG_INFO);
+
+					if oNasDomClient.Owners[i].contacts[j].ContTypes.Find(TypeContact)<>Nil then
+					begin 
+
+						// Traitement...
+						logger_NAS(oNasDomClient,'Le Contact "' + oNasDomClient.Owners[i].contacts[j].name + '" est récipiendaire car il a bien le type de contact : "' + TypeContact + '"', CALLER, LOG_INFO);
+	// 						AJout du BOM UTF-8 en entête de fichier si premier
+						if NbCont=0 then
+						Begin
+	// 							x.AddConstantN('UTF8BOM', 'String').SetString('#239#187#191');
+							AppendFichier(utf8BOM, fileresult);
+						End;
+						AppendFichierUTF8(oNasDomClient.Owners[i].contacts[j].Prefix + ';' + oNasDomClient.Owners[i].contacts[j].Firstname + ';' + oNasDomClient.Owners[i].contacts[j].Name + ';' + oNasDomClient.Owners[i].contacts[j].Email + ';' + oNasDomClient.Owners[i].subdomain + ';' + oNasDomClient.Owners[i].external_id + CRLF, fileresult);
+						NbCont:=NbCont+1;
+					End;
+				End;
+			End;
+		End;
+
+	Except
+		logger_NAS(oNasDomClient,'Erreur fatale ' + ExceptionParam, CALLER, LOG_INFO);
+		SCResults.errmsg:='Erreur fatale lors de l''exécution du script : ' + ExceptionParam;
+	
+	Finally
+		SCResults.mimetype:='text/plain';
+		if SCResults.errmsg<>'' then
+		Begin
+
+			logger_NAS(oNasDomClient,'Erreur lors du traitement : ' + SCResults.errmsg, CALLER, LOG_INFO);
+			SetExitCode(2);
+		End
+		Else
+		Begin
+			// AUcun contact trouvé
+			if NbCont<1 then
+			Begin
+				SCResults.errmsg:='Aucun contact correspondant n''a été trouvé !'
+				logger_NAS(oNasDomClient, SCResults.errmsg, CALLER, LOG_INFO);
+			End
+			Else
+			Begin
+				SCResults.mimetype:='text/comma-separated-values';
+				SCResults.ResponseFile:=fileresult;
+				logger_NAS(oNasDomClient,'Traitement Ok, ' + Int64ToStr(NbCont) + ' contact(s) retourné(s)', CALLER, LOG_INFO);
+			End;
+		End;
+		
+		SCResults.savetofile;
+
+		if oNasDomClient<>Nil then oNasDomClient.Free();
+		SCResults.Free();
+		SCParams.Free();
+		FreecloudRes;
+
+		SetExitCode(0);
+	End;
+
+
+End.

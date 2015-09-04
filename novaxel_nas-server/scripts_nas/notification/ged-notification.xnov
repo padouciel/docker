@@ -1,0 +1,1049 @@
+{$DEFINE DEBUG}
+
+{
+
+Version 1.0.0.0
+
+Script appelé par webservice exec_script en mode authentifié (OWNER logué) et recevant en tant que paramaètres (TScriptParams) 
+- Les Owners/password en cours de session
+- DECLENCHEUR (idem GEDPARAM NOTIFICATION/DECLENCHEUR) : obligatoire
+- DATE_START (si DECLENCHEUR=2) : obligatoire
+- LIB_ID et(/ou ?) LIB_TITLE: facultatif
+- DATE_END : facultatif
+- DATE_CREATION : Facultatif
+- DATE_MODIFICATION : Factulatif 
+
+TODO :
+- Prendre en compte TScriptParam.URL_NAS (ou équivalent) dans la prochaine version NAS, pour se connecter au NAS local  
+
+En cas d'erreur, on renvoie un message d'erreur dans TScriptResult.Errmsg
+Sinon un message d'information dans TScriptResult.DataResult
+
+On parcours les GedUsers d'un OWNER, et chacune des bibs accessibles par ce geduser, pour initialiser l'envoi d'un mail de notification et des NASSTORAGE pour le client web
+
+À prendre en compte :
+- Serveur SMTP Ok pour l'OWNER en cours (sinon KO)
+- Modèle mail OK pour l'OWNER en cours (sinon KO)
+- GEDPARAMS de NOTIFICATION OK pour le GEDUSER/LIB en cours
+
+V 1.0.1.2
+  - Ajout de ParseURL
+  - Ajout de Parse Email
+  - Ajout de GetDomParam
+  
+V 1.0.2.0
+  - Ajout de variables dans email
+  - Corrections sur Parse de variable
+  - Récupération de oNasDomClient.url sir DOMAIN/WEB_URL non trouvé  
+
+V 1.0.3.1
+  - Ajoute d'un paramètre optionel JUSTIFICATION de type chaine = message expliquant à quoi correspond la date de notification  
+  - de la variable cJustification qui est ajoutée dans le nastorage pour l'utilisateur dans  SUBSCRIPTION\JUSTIFICATION
+  - Ajout de la macro %justification%
+
+V 1.0.4.0
+  - Prise en compte des events pour la date de dernière connexion
+  - Prise en compte l'avant dernière connexion en TEVENT (la dernière étant toujours la connexion/session en cours)...
+  - Utilisation de TScriptPArams.nas_url 
+  - Ajout de paramètres en entrée de script
+    * Prise en compte pour la recherche
+    * Init de nouveau NASStorage pour traitement par le client WEB
+  - Nettoyage des NASStorages avant utilisation pour éviter d'avoir une pollution d'un lancement précédent...
+  - Gestion des heures si date_start et date_end sont identiques (ajout de '23:59:59' en date de fin
+  
+  V 1.0.4.1
+    - Correction bug stockage NASTorage DateEnd (sans heure de fin)
+    - Correction : Typo Const WITHCREATED
+
+V   V 1.0.4.2
+    - Correction erreur recherche date last_connect (dernière WEB vs avant-dernière WEB précédemment)
+
+}
+
+Program Abonnement;
+const
+	Version='1.0.4.2';
+ 
+  CALLER='Script Mail Abonnement';
+  
+  // URL du NAS
+  // TODO : Parser pour récup depuis TScriptParams.ScriptURL...
+  //cURL='http://localhost:80';
+
+ // Niveaux de logs
+	LOG_INFO=0;
+	LOG_ERROR=1;
+	LOG_DEBUG=2;
+	LOG_WARNING=3;
+
+	// Comportement SSL NAS par défaut
+	NAS_HOST_SSL_SELF_SIGNED_Ok=True;
+	NAS_HOST_SSL_VALID_CERTIF=true;
+	// Chemin pointant vers un répertoire contenant les CA Racines
+	// attention, nécessaire sous Linux si la validation des certificats SSL est actives
+	NAS_SSL_CAPATH = '/etc/ssl/certs';
+
+	// Gedparam contenant le serveur SMTP Owner
+	SMTP_GP_SECTION='REGLAGE';
+	SMTP_GP_NAME='SMTP';
+
+	// Gedparam Licence Notification
+	LICNOTIF_GP_SECTION='LICENCE';
+	LICNOTIF_GP_NAME='NOTIFICATION';
+
+	// Gedparam Moduèle MAIL
+	MAILTEMPL_GP_SECTION='NOTIFICATION';
+	MAILTEMPL_GP_NAME='MAIL_MODELE';
+
+  	// Gedparam Notification actif
+	NOTIFOK_GP_SECTION='NOTIFICATION';
+	NOTIFOK_GP_NAME='ACTIF';
+
+  // Gedparam Notification MAil actif
+	NOTIFMAILOK_GP_SECTION='NOTIFICATION';
+	NOTIFMAILOK_GP_NAME='MAIL_NOTIFICATION';
+ 
+  // Gedparam Notification MAil actif
+	SEARCHOK_GP_SECTION='DROITS';
+	SEARCHOK_GP_NAME='RECHERCHER';
+
+  	// Gedparam Abonnement Matrice
+	SEARCHMATOK_GP_SECTION='NOTIFICATION';
+	SEARCHMATOK_GP_NAME='MATRICE';
+ 
+  // Storage Last COnnect
+{ Obsolète 1.0.0.3  
+  LASTCON_ST_SECTION='SUBSCRIPTION';
+  LASTCON_ST_NAME='DATELASTCONNECT';
+}
+  
+  // Storage SECTION
+  SUBSCRIPT_ST_SECTION='SUBSCRIPTION';
+  
+  // Date de référence (départ) pour le client WEB
+  DATEREF_ST_NAME='DATEREF';
+  // Storage : Justification de la DATEREF
+  JUSTIFICATION_ST_NAME='JUSTIFICATION';
+  // Date de fin (si passée)
+  DATEEND_ST_NAME='DATEEND';
+  // Docs modifiés (si passée)
+  MODIFIEDDOC_ST_NAME='WITHMODIFIED';
+  // Docs créés (si passée)
+  CERATEDDOC_ST_NAME='WITHCREATED';
+  
+  // URL d'accès au NAS client WEB
+  WEBURL_DP_SECTION='DOMAIN';
+  WEBURL_DP_NAME='WEB_URL';
+  
+
+	// Délimiteur de macro par défaut
+	LOC_PARSER_DELIM='%';
+  
+
+var
+// 	cURL,cLogin,cPassword:string; //,cTitleLib
+
+   Dummy: String;
+
+
+	// Paramètres du script
+	cTrigger:integer;
+	cDateTrigger:String;
+	CLib_id:int64;
+ // V 1.0.3.1
+  cJustification:string;
+  //V 1.0.4.0
+  cDateEnd:String;
+  cWithCreated:Integer; // Used as boolean
+  cWithModified:Integer; // Used as boolean
+  
+	oNasDomClient:TNasDomClient;                                
+	oNasLibClient: TNasLibClient;
+	
+	i,x,yy:integer;
+	
+	OOwner:Towner;
+	Gusers:TGedusers;   // liste mémoir globale des utilisateurs a qui on doit envoyer un mail
+	
+	oNovSendSMTP:TNovSendSMTP;
+
+	SCParams : TScriptParams;
+	SCResults: TScriptResult;
+
+	hostname:String;
+ 
+  MailObject:String;
+  MailBody:String;
+  
+  OGedParamMail:TGedparamValue;
+
+  cURL:String;
+
+{
+Récupération et traitement des paramètres passés au script
+}
+Function GetParamOK(Params:TScriptParams;Results:TScriptResult):Boolean;
+var
+   Dummy:TDateTime;
+Begin
+
+	Result:=False;
+
+	Try
+		If params.paramsList.count=0 then
+    Begin
+       Results.ErrMSg:='Aucun Paramètre trouvé';
+			Exit;
+   End;
+
+			// Paramètres attendus
+		if trim(Params.GetValue('DECLENCHEUR'))<> '' then cTrigger:=StrToInt(trim(Params.GetValue('DECLENCHEUR')));
+		cDateTrigger:=trim(Params.GetValue('DATE_START'));
+		if trim(Params.GetValue('LIBID'))<>'' then CLib_id:=StrToInt64(trim(Params.GetValue('LIBID')));
+    cJustification:=trim(Params.GetValue('JUSTIFICATION'));
+    cDateEnd:=trim(Params.GetValue('DATE_END'));
+    if cDateEnd<>'' then 
+    Begin
+         Try
+            Dummy:=SQLToDateTime(cDateTrigger);
+         Except
+            Results.ErrMSg:='Erreur de conversion du Paramètre DATE_END';
+            Exit;
+         End;
+    End;
+    if trim(Params.GetValue('DATE_CREATION'))<> '' then cWithCreated:=StrToInt(trim(Params.GetValue('DATE_CREATION')));
+    if trim(Params.GetValue('DATE_MODIFICATION'))<> '' then cWithModified:=StrToInt(trim(Params.GetValue('DATE_MODIFICATION')));
+    
+    if (cTrigger=2) Then
+    Begin
+        if (cDateTrigger='') then
+        Begin
+           Results.ErrMSg:='Paramètre DATE_START non trouvé et DECLENCHEUR=2';
+           Exit;
+        End
+        Else // Date non vide, on essaie de la convertir (TODO : Est-ce utile et si non à quoi ressemblerait cette date avec une chaine vide ?)
+        Begin
+             Try
+                Dummy:=SQLToDateTime(cDateTrigger);
+             Except
+                Results.ErrMSg:='Erreur de conversion du Paramètre DATE_START';
+                Exit;
+             End;
+        End;
+    End;
+    
+    // Il nous faut au moins un type de document pour lancer une recherche...
+    
+    if (cWithCreated=0) And (cWithModified=0) then
+    Begin
+         Results.ErrMSg:='Il faut qu''un des deux paramètes "Date de création" ou "Date de modification" soit passé';
+         Exit;
+    End;
+    
+  	Result:=True;
+
+	except
+    Results.ErrMSg:='Erreur de traitement dans la procédure de vérification de paramètre : '  ExceptionParam;
+		Result:=False;
+
+  Finally
+    // Si une erreur de paramètre, on ajoute un texte sur ceux attendus
+    if Results.ErrMSg<>'' then
+       SCResults.Errmsg:='Erreur : Paramètre(s) incorrect(s) : ' + Results.Errmsg;
+	End;
+		
+End;
+
+function Iif(expr:boolean;IfTrue:Variant ; IfFalse: Variant):Variant;
+Begin
+	if expr then result := IfTrue Else result := IfFalse;
+End;
+
+
+function GetHostname(): string;
+begin
+     if (hostname='') then
+     Begin
+          {$IFDEF MSWINDOWS}
+          result:=GetEnvironmentVariable('COMPUTERNAME');
+          {$ELSE}
+          result:=GetEnvironmentVariable('HOSTNAME');
+          {$ENDIF}
+               if (result='') then
+                  // Par défaut
+                  result:='localhost';
+     End
+     Else
+     begin
+		      result:=hostname;
+     End;
+End;
+
+{
+	Enregistrement d'un message de log dans le fichier de log client NAS (ie : fichier novaappserver_client.log)
+}
+Procedure logger_NAS(oNasDomClient:TNasDomClient; msg:string; caller:String; LogLevel:integer);
+var
+	level:string;
+begin
+
+	// Pas la peine de continuer, on continue silencieusement
+	if (oNasDomClient=Nil) then exit;
+	if (oNasDomClient.loggedOwner=Nil) then exit;
+
+  // On ne log rien si pas en mode DEBUG
+  	{$IFNDEF DEBUG} exit; {$ENDIF}
+
+	case Loglevel of
+		LOG_INFO: level:='[INFO] : ';
+		LOG_ERROR: level:='[ERREUR] : '; // Erreur fatale
+		LOG_WARNING: level:='[WARNING] : '; // Erreur non fatale
+		LOG_DEBUG: level:='[DEBUG] : ';
+	Else
+		RaiseException(ErTypeMismatch,'Le paramètre level ne peut-être que LOG_INFO (' + intToStr(LOG_INFO) + '), LOG_ERROR (' + intToStr(LOG_ERROR) + '), LOG_WARNING (' + intToStr(LOG_ERROR) + ') ou LOG_DEBUG ' + intToStr(LOG_DEBUG) + ')');
+	End;
+
+	// Il faut-être logué pour écrire...
+	if (oNasDomClient.loggedOwner.logged) then
+	Begin
+		if not oNasDomClient.log(
+			GetHostname + ': ' + JustName(FichierScript) + ' - ' + caller + ' : '
+			+ level
+			+ msg
+			) then
+			RaiseException(erCustomError, 'Impossible d''ajouter un message dans le log NAS client : Erreur NAS : ' + oNasDomClient.Errcode + '-' + oNasDomClient.Errmsg + 'et/ou erreur runtime : ' + ExceptionParam);
+
+// 	End
+// 	Else
+// 	Begin
+// 		RaiseException(erCustomError, 'L''objet "oNasDomClient" passé n''est pas correctement instancié');
+	End;
+
+
+end;
+
+
+{
+	Fonction de connexion au NAS :
+	Attend :
+	- oNasDomClient une instance de TNasDomClient
+	- URL : URL de connexion au serveur
+}
+function NASConnect(oNasDomClient:TNasDomClient; URL:string):boolean;
+begin
+
+	oNasDomClient.AcceptSelfSignedCertificate := NAS_HOST_SSL_SELF_SIGNED_Ok;
+	oNasDomClient.RequiresCertificateValidation := NAS_HOST_SSL_VALID_CERTIF;
+
+    if (oNasDomClient.RequiresCertificateValidation) then
+    begin
+      oNasDomClient.ClientHttp.CAcertsPath := NAS_SSL_CAPATH;
+      oNasDomClient.ClientHttp.loadCAcertificates;
+	end;
+
+	result:=oNasDomClient.Connect(URL);
+
+{
+	// Tentative de connexion sur l'URL de secours
+	if not result then
+	Begin
+		logger('Échoué sur "' + URL + '" : ' + oNasDomClient.Errcode + ' - ' + ONasDOmClient.Errmsg,caller,LOG_INFO,LogFile);
+		logger('on tente sur "' + NAS_URL_SEC + '"',Caller,LOG_INFO,LogFile);
+		result:=oNasDomClient.Connect(NAS_URL_SEC);
+		if not result then
+			logger('Échoué sur "' + NAS_URL_SEC + '" : ' + oNasDomClient.Errcode + ' - ' + ONasDOmClient.Errmsg,caller,LOG_INFO,LogFile);
+	End;
+ }
+end;
+
+Function GEDConnect(oNasLibClient:TNasLibClient; URL:string):boolean;
+begin
+	oNasLibClient.AcceptSelfSignedCertificate := NAS_HOST_SSL_SELF_SIGNED_Ok;
+	oNasLibClient.RequiresCertificateValidation := NAS_HOST_SSL_VALID_CERTIF;
+
+    if (oNasLibClient.RequiresCertificateValidation) then
+    begin
+      oNasLibClient.ClientHttp.CAcertsPath := NAS_SSL_CAPATH;
+      oNasLibClient.ClientHttp.loadCAcertificates;
+	end;
+
+	result:=oNasLibClient.Connect(URL);
+
+end;
+
+
+{
+	Fonction de login au NAS :
+	Attend :
+	- oNasDomClient une instance de TNasDomClient
+	- Login : un login NAS
+	- isPasswdHashed : bolean True si le mot de passe utilisé est déjà hashé (ie. passé directement sous forme d'empreinte SHA 256)
+}
+function NASLogin(oNasDomClient:TNasDomClient; login:string; password:string; isPasswdHashed:boolean):boolean;
+begin
+	oNasDomClient.IsPasswdHashed:=isPasswdHashed;
+	result:=oNasDomClient.domainLogin(Login,Password);
+end;
+
+{
+	Recherche d'un serveur SMTP
+}
+Function GetSMTP(OOWner:TOwner):TNovSendSMTP;
+var
+	ParamsSMTP: TStringList;
+	
+Begin
+
+	try
+
+		Result:=Nil;
+	
+
+		logger_NAS(oNasDomClient,'Recherche d''un serveur SMTP avec les paramètres "' + SMTP_GP_SECTION + '/' + SMTP_GP_NAME + '"',CALLER, LOG_INFO);
+
+//		oOwner.Load(False);
+
+
+		// on essaie d'utiliser un serveur SMTP OWNER défini
+		ParamsSMTP:=Tstringlist.create;
+
+		ParamsSMTP.text:=OOwner.Gedparamvalues. AsBLOB[SMTP_GP_SECTION,SMTP_GP_NAME];
+
+		if ParamsSMTP.count>0 then
+		begin
+			logger_NAS(oNasDomClient,'Récupération d''un serveur SMTP en paramètre OK, on essaie de l''utiliser',CALLER, LOG_INFO);
+
+			Result:=TNovSendSMTP.create;
+
+			// Chargement des paramètres SMTP à partir du GEDPRAM dans l'objet TNovSendSMTP
+			Result.LoadServerFromList(ParamsSMTP);
+
+			{$IFNDEF MSWINDOWS}
+			if (Result.SSLCheckCertificate) then
+			begin
+				Result.CAcertsPath := NAS_SSL_CAPATH;
+			end;
+			{$ENDIF}
+
+			if not Result.connect then
+			begin
+     		logger_NAS(oNasDomClient,'ParamSMTP récupéré : ' + CRLF + ParamsSMTP.text,CALLER, LOG_DEBUG);
+				logger_NAS(oNasDomClient,'Erreur de connexion sur le serveur SMTP récupéré en GEDPARAM :' + CRLF + Result.Trace.text,CALLER, LOG_WARNING);
+				Result.Free();
+				Result:=Nil;
+			end
+			else
+			Begin
+				logger_NAS(oNasDomClient,'Connexion sur le serveur SMTP récupéré en GEDPARAM OK, on l''utilisera pour envoyer des mails...',CALLER, LOG_INFO);
+			End;
+		End
+		else
+			logger_NAS(oNasDomClient,'Aucun serveur SMTP disponible en GEDPARAM...',CALLER, LOG_INFO);
+
+	Finally
+		ParamsSMTP.Free();
+		if result<>Nil then 
+		Begin
+			Result.Close();
+			logger_NAS(oNasDomClient,'Un serveur SMTP a été trouvé et sera utilisé...',CALLER, LOG_DEBUG);
+		End
+		else
+			logger_NAS(oNasDomClient,'Aucun serveur SMTP n''a pu être trouvé, on renverra une erreur...',CALLER, LOG_DEBUG);
+
+	End;
+
+End;
+
+{
+	Récupération de la valeur d'un paramètre domaine :
+	Attend :
+	- oNasDomClient une instance de TNasDomClient
+	- SECTION/NAME : élément de récupération du paramètre
+	- ValueParam : PlaceHolder de la valeur du paramètre
+	- ValBlb : PlaceHolder de la valeur du blob du pramètre
+}
+function NASGetDomParamValues(oNasDomClient:TNasDomClient; Section, Name:String;var ValueParam:String;ValBlb:TStringStream):boolean;
+var
+	oDomParam:TDomParam;
+begin
+	Result:=False;
+
+	// Chargemement de la liste des paramètres
+	Result:=oNasDomClient.domParams.Load(True);
+	
+
+	if not Result then exit;
+
+	oDomParam:=oNasDomClient.DomParams.get(Section,Name);
+
+	if oDomParam = Nil then
+	Begin
+		Result:=False;
+		exit;
+	End;
+
+ 	if oDomParam.ValueBlobFilled then
+ 		oDomParam.GetBlobValue(ValBlb);
+
+	ValueParam:=trim(oDomParam.Value);
+
+	Result:=True;
+
+end;
+
+{
+	Parser de texte (à la sprintf) qui attend, un texte (body de message par exemple) contenant des variables encadrées par des Delim
+	Chaque variable est associé à un Item en TStringList
+	LstVar DOIT être un Tstringlist de la forme : key=valeur
+	Renvoie le Text parsé en cas de réussite ou '' en cas d'erreur...
+	Si WithError est true, on lève une erreur si toutes les variables présentens dans Text ne sont pas trouvées dans LstVar
+}
+Function ParseText(Text,Delim:String;LstVar:TstringList;WithError:boolean):String;
+var
+	i:Integer;
+	TempVals:TStringList;
+
+Begin
+	Result:=Text;
+	Try
+		For i:=0 to LstVar.count-1 do
+			Result:=
+				StrReplace(
+					Result,
+					Delim + LstVar.names[i] + Delim, 
+					LstVar.Values[LstVar.names[i]]
+				);
+
+		if WithError Then
+		Begin
+  		TempVals:=TstringList.create();
+  		SplitRegExpr(Delim, Result, TempVals);
+
+			//outputErr('Valeur de tempVals : ' + TempVals.Text);
+			if TempVals.count > 1 then
+				RaiseException(erOutOfGlobalVarsRange, 'La variable "' + TempVals[1] +'" n''a pas été trouvée dans LstVal');
+			TempVals.Free();
+		End;
+{ // À revoir (supprime tout...)
+		Else // On efface toutes les valeurs qui n'ont pas été trouvées (nettoyage)
+			Result:=ReplaceRegExpr(delim + '.*' + delim ,Result,'',true);
+} 
+	Except
+		Result:='';
+		//outputErr(ExceptionParam);
+		RaiseLastException;
+
+	End;
+End;
+
+
+Function ParseEmail(ONasDOmClient:TNasDomClient; var subject, Body:String):Boolean;
+Var
+	//CALLER:String;
+	LstVar:TStringList;
+// 	LstDest:TStringList;
+
+	ParserDelim:String;
+	ValParam:String;
+
+//	AdminAddress:String;
+
+//	ValBlb:TStringStream;
+Begin
+
+     Result:=False;
+
+		NASGetDomParamValues(oNasDomClient, 'DOMAIN','MACRO_DELIM',ParserDelim,Nil);
+		ParserDelim:=trim(ParserDelim);
+
+		if ParserDelim='' then
+		begin
+			logger_NAS(oNasDomClient,'Impossible de récupérer la valeur du délimiteur de Macro en TDOMPARAM : ' + oNasDomClient.Errcode + ' : ' + oNasDomClient.Errmsg,CALLER, LOG_WARNING);
+			ParserDelim:=LOC_PARSER_DELIM;
+		end;
+
+		// On récupère les variables identifiées
+		logger_NAS(oNasDomClient,'Récupération des variables nécessaires au traitement des mails',CALLER, LOG_DEBUG);
+
+		LstVar:=TStringList.Create();
+		LstVar.add('domain_name' + '=' + trim(oNasDomClient.DomainName));
+		LstVar.add('subdomain_name' + '=' + trim(ONasDomclient.LoggedOwner.subdomain));
+ 		LstVar.add('justification' + '=' + trim(cJustification));
+
+   
+
+    if (NASGetDomParamValues(oNasDomClient, WEBURL_DP_SECTION,WEBURL_DP_NAME,ValParam,Nil)) then
+				LstVar.add('domain_url' + '=' + trim(ValParam) + '/' + ONasDomclient.UriSubdomain + '/' + ONasDomclient.LoggedOwner.subdomain)
+    Else
+    Begin
+				logger_NAS(oNasDomClient,WEBURL_DP_SECTION + '/' + WEBURL_DP_NAME + ' non présent en Paramètre domaine, on essaie avec l''url interne du domaine',CALLER, LOG_WARNING);
+        LstVar.add('domain_url' + '=' + ONasDomclient.url + '/' + ONasDomclient.UriSubdomain + '/' + ONasDomclient.LoggedOwner.subdomain);
+    End;        
+
+		logger_NAS(oNasDomClient,'Variables récupérées :' + CRLF + LstVar.Text,CALLER, LOG_DEBUG);
+		subject:=ParseText(subject,ParserDelim,LstVar,False);
+		Body:=ParseText(Body,ParserDelim,LstVar,False);
+
+		logger_NAS(oNasDomClient,'Subject parsé :' + subject,CALLER, LOG_DEBUG);
+		logger_NAS(oNasDomClient,'Body parsé :' + Body,CALLER, LOG_DEBUG);
+   
+    Result:=True;
+
+End;
+
+Function TraiteUser(oUser:TgedUser; Ownerlogin,Ownerpassword:string;lib_id:Int64;oNasLibClient:TNasLibClient):boolean;
+var
+   oNasDomClient: TNasDomClient;
+   logsyncs: TLogSyncs;
+   libs:TLibraries;
+//   oLib:Tlibrary;
+   x,xx:integer;
+   search:TNasSearch;
+   startDate,endDate: TDateTime; 
+   MinLevel,MaxLevel,MaxItemsCount,itemsCount: integer;
+   endreached:boolean;
+   libItems: TLibItemsList;
+   OEvents:TEvents;
+   WithModified, WithCreated: Boolean;
+   
+//   TypeAbonnement:integer;
+begin
+	
+    Result:=False;
+    
+    oNasDomClient:=TNasDomClient(oUser.NasDomClient);
+    
+    logger_NAS(oNasDomClient,'Traitement du GedUser ' + oUser.login, CALLER, LOG_DEBUG);
+
+    if oUser.contact.email='' then
+    Begin
+       logger_NAS(oNasDomClient,'GedUser ' + oUser.login + ' sans mail, on passe au suivant', CALLER, LOG_DEBUG);
+       exit;
+    End;
+    
+    // On se conbnecte pour obtenir les gedparamvalues de la session utilisateur GED...
+    
+    oNasLibClient.IsPasswdHashed :=True; // Password haché reçu de TScriptParam...
+	  if not oNasLibClient.Login_as_owner(Ownerlogin,'', Ownerpassword, oUser.login, Libs) then
+    begin
+       logger_NAS(oNasDomClient,'Impossible de se connecter en tant que GedUser ' + oUser.login + ' : ' + 
+         'error:' + oNasLibClient.Errcode + ',' + oNasLibClient.Errmsg, CALLER, LOG_ERROR);
+         exit;
+    end;
+    
+    if libs.count = 0 then
+    Begin
+       logger_NAS(oNasDomClient,'GedUser ' + oUser.login + ' Aucuune bib à traiter, on passe au suivant', CALLER, LOG_DEBUG);
+       Exit;
+    End;
+    
+    Try 
+  
+      For x:=0 to libs.count-1 do // on parcourt toutes les bib de l'utilisateur
+      begin
+          if lib_id<>0 then
+          Begin
+             //logger_NAS(oNasDomClient,'Lib ' + Int64ToStr(Lib_id) + ' demandée en paramètre, on vérifie avec la lib en cours...', CALLER, LOG_DEBUG);
+             if lib_id<>libs[x].Id then // si on ne veut traiter qu'une seul bib en particulier
+             Begin
+               logger_NAS(oNasDomClient,'Lib ' + Int64ToStr(libs[x].Id) + ' (' + libs[x].Title + ') non demandée en paramètre de script, on passe à la suivante', CALLER, LOG_DEBUG);
+               Continue;
+             End;
+          End;
+  		
+          if not oNasLibClient.LibConnect(libs[x].id) then
+          Begin
+             logger_NAS(oNasDomClient,'Erreur en connexion sur le bib  ' + libs[x].Title + ' (' + Int64ToStr(libs[x].Id) + ')  error :' + oNasLibClient.Errcode + ',' + oNasLibClient.Errmsg, CALLER, LOG_ERROR)
+             Continue;
+          End
+          Else
+             logger_NAS(oNasDomClient,'GedUser ' + oUser.login + ' Connexion sur la bib ' + libs[x].Title + ' path : ' + libs[x].DBPath, CALLER, LOG_DEBUG);
+      		
+          // on teste les paramètres
+          if not oNasLibClient.Load_gedparamvalues_for_session then
+          begin
+             logger_NAS(oNasDomClient,'GedUser ' + oUser.login + ' impossible de charger les paramètres de session', CALLER, LOG_DEBUG);
+             Continue;
+      		end;
+      
+         // Recherche active
+          if not oNasLibClient.ParamValues.asBoolean[SEARCHOK_GP_SECTION,SEARCHOK_GP_NAME] then
+          begin
+             logger_NAS(oNasDomClient,'GedUser ' + oUser.login + ' Paramètre "' + SEARCHOK_GP_SECTION + '/' + SEARCHOK_GP_NAME + '" à faux, bib suivante', CALLER, LOG_DEBUG);
+             Continue;
+          End;
+  
+         // Notif active
+          if not oNasLibClient.ParamValues.asBoolean[NOTIFOK_GP_SECTION,NOTIFOK_GP_NAME] then
+          begin
+             logger_NAS(oNasDomClient,'GedUser ' + oUser.login + ' Paramètre "' + NOTIFOK_GP_SECTION + '/' + NOTIFOK_GP_NAME + '" à faux, bib suivante', CALLER, LOG_DEBUG);
+             Continue;
+          End;
+  
+         // Notif Mail active
+          if not oNasLibClient.ParamValues.asBoolean[NOTIFMAILOK_GP_SECTION,NOTIFMAILOK_GP_NAME] then
+          begin
+             logger_NAS(oNasDomClient,'GedUser ' + oUser.login + ' Paramètre "' + NOTIFMAILOK_GP_SECTION + '/' + NOTIFMAILOK_GP_NAME + '" à faux, bib suivante', CALLER, LOG_DEBUG);
+             Continue;
+          End;
+          
+          // Paramétrage de la recherche
+          search := TNasSearch.Create(oNasLibClient);
+          
+          // Dépend du Gedparam
+          search.withSubscription := oNasLibClient.ParamValues.asBoolean[SEARCHMATOK_GP_SECTION,SEARCHMATOK_GP_NAME];
+          
+          // Peut-être 0 (lastconnect client WEB), 1 (lastsynchro), 2 (date libre)
+          Case cTrigger of 
+            0:  // Date dernière connexion
+            Begin
+                logger_NAS(oNasDomClient,'Script appelé sur date de dernière connexion, récupération en Events...', CALLER, LOG_DEBUG);
+               // On cherche la date de dernière connexion en Event
+               OEvents:=TEvents.Create(oNasDomClient);
+                //function Load(id, parentid, srvport, actionid, actionlevel, status, ownerid, libraryid, geduserid, itemIdi: integer; time_start, time_end: TDateTime; Origin, ip, actionType: string; maxrows: integer): boolean;
+                // TODO : travailler avec web_service au lieu d'action_id dans prochaine version NAS/Script...
+                // On récupère la date de dernière connexion WEB (le client WEB doit récupérer la date de l'avant dernière, la dernière étant la session WEB courante)
+               if not OEvents.load(0, 0, 0, 3, 0, 0, 0, libs[x].Id, oUser.Id, 0, 0, 0, 'web', '', '',1) then
+               Begin
+                  logger_NAS(oNasDomClient,'Erreur lors de la récupération des events - error :' + oNasLibClient.Errcode + ',' + oNasLibClient.Errmsg, CALLER, LOG_WARNING);
+                  Continue;
+               End
+               Else
+               Begin
+                  if oEvents.count=1 then
+                  Begin
+                     logger_NAS(oNasDomClient,'Init StartDate avec date de dernière connexion WEB...', CALLER, LOG_DEBUG);
+                     // On récupère la date de dernière connexion WEB 
+                     StartDate:=OEvents[0].Start_time;
+                  End
+                  Else
+                  Begin
+                   logger_NAS(oNasDomClient,'Aucune date de dernière connexion trouvée en events, bib suivante', CALLER, LOG_WARNING);
+                    Continue;
+                  End;
+               End;
+            End;
+            1: // Date de dernière synchro (avant dernière sur le principe)
+            Begin
+                logger_NAS(oNasDomClient,'Script appelé sur date de dernière synchro, récupération en LogSync', CALLER, LOG_DEBUG);
+                LogSyncs:=TLogSyncs.Create(oNasDomClient);
+  
+                if not logsyncs.Load(0,libs[x].id,0,0,1,2, False) then
+                Begin
+                   logger_NAS(oNasDomClient,'Impossible de récupérer les logs de synchro de la bib, bib suivante', CALLER, LOG_WARNING);
+                   Continue;
+                 End
+                 Else
+                   logger_NAS(oNasDomClient,'Logs de synchro récupérés, on cherche l''avant dernière', CALLER, LOG_DEBUG);
+                 
+                 if logsyncs.count = 2 then
+                 Begin 
+                   logger_NAS(oNasDomClient,'Init StartDate avec avant dernière synchro...', CALLER, LOG_DEBUG);
+                    StartDate:=logsyncs[1].Time_End;
+                 End
+                 Else
+                 Begin
+                   logger_NAS(oNasDomClient,'Impossible de récupérer la date de l''avant dernière synchro, bib suivante', CALLER, LOG_WARNING);
+                   Continue;
+                 End;
+                 logger_NAS(oNasDomClient,'StartDate : ' + DateTimeToSQL(StartDate), CALLER, LOG_DEBUG);
+            End;
+            2: // Date Libre
+            Begin
+                 logger_NAS(oNasDomClient,'Script appelé sur date libre, Utilisation de la date passé en paramètre : ' + cDateTrigger, CALLER, LOG_DEBUG);
+                 Try
+                   StartDate:=SQLToDateTime(cDateTrigger);
+                 Except
+                   logger_NAS(oNasDomClient,'Impossible de récupérer la date passée en paramètre, bib suivante', CALLER, LOG_WARNING);
+                   Exit; // ça ne fonctionnera pas mieux pour la prochaine bib ;-)
+                 End;
+            End;                                 
+            
+          End;            
+          
+          logger_NAS(oNasDomClient,'Préparation de la recherche...', CALLER, LOG_DEBUG);
+  
+          search.countOnly:=True; 
+           
+          If cDateEnd<>'' then
+          Begin
+             EndDate:=SQLToDateTime(cDateEnd);
+             
+             EndDate:=StrToDateTime(DateToStr(EndDate) + ' 23:59:59');  
+          End
+          Else
+              EndDate:=Now;
+              
+          If CWithModified<>0 then
+             WithModified:=True
+          Else
+             WithModified:=False;
+             
+          If CWithCreated<>0 then
+             WithCreated:=True
+          Else
+             WithCreated:=False;
+          
+          search.SetDateSearch(startDate,EndDate, WithCreated, WithModified);
+
+          // 1 seul document suffit à générer le mail...  
+      		MaxItemsCount := 1;
+         
+          MinLevel:= 12; // -1=tous sauf chemises et documents, 0=tous, autre= niveau mini recherché 1..4, 10..12
+          MaxLevel:= 12; // niveau maxi recherché 1..4, 10..12
+
+          search.SetTitleSearch(MinLevel,MaxLevel,-1,clTitre,oCommencePar,'');
+  
+          logger_NAS(oNasDomClient,'Lancement de la recherche avec les paramètes particuliers et définitifs suivant' + CRLF + 
+               'StartDate:' + DateTimeToSQL(search.startDate)+ CRLF +  
+               'EndDate:' + DateTimeToSQL(search.endDate) + CRLF +
+               'WithModified:' + iif(WithModified,'True','False') + CRLF +              
+               'WithCreated:' + iif(WithCreated,'True','False') + CRLF +              
+               'WithSubscription:' + iif(Search.withSubscription,'True','False')  
+               , CALLER, LOG_DEBUG);
+      
+          libItems := TLibItemsList.Create(oNasLibClient, nil);
+  		
+          if (libItems.loadFromSearch(search, itemsCount, endreached, MaxItemsCount, true)) then
+          begin
+             logger_NAS(oNasDomClient,'Résultat de la recherche OK avec nombre d''item trouvé : ' + intToStr(itemsCount), CALLER, LOG_INFO);
+          
+            Result:=itemsCount> 0
+            
+            if (Result) then
+            Begin
+               logger_NAS(oNasDomClient,'Stockage des NasStorage en section "' + SUBSCRIPT_ST_SECTION + '"', CALLER, LOG_DEBUG);
+                 // Nettoyage de tous les NASTorages éventuellement existant pour ne pas garder un reliquat utilisé la dsernière fois, mais plus sur la recherche en cours
+                 if not libs[x].Storages.Delete(SUBSCRIPT_ST_SECTION,'') then
+                    logger_NAS(oNasDomClient,'Erreur lors de la Suppression NasStorage - error :' + oNasLibClient.Errcode + ',' + oNasLibClient.Errmsg, CALLER, LOG_WARNING);
+
+               // Stockage de la date en NASStorage pour que le client WEB la prenne en compte lors de la prochaine connexion utilisateur
+               libs[x].Storages.AddValue(SUBSCRIPT_ST_SECTION,DATEREF_ST_NAME,DateTimeToSQL(StartDate));
+               if cJustification<>'' then libs[x].Storages.AddValue(SUBSCRIPT_ST_SECTION,JUSTIFICATION_ST_NAME,cJustification);
+               if cDateEnd<>'' then libs[x].Storages.AddValue(SUBSCRIPT_ST_SECTION,DATEEND_ST_NAME,DateTimeToSQL(EndDate));                 
+               if CWithModified<>0 then libs[x].Storages.AddValue(SUBSCRIPT_ST_SECTION,MODIFIEDDOC_ST_NAME,IntToStr(CWithModified));                
+               if CWithCreated<>0 then libs[x].Storages.AddValue(SUBSCRIPT_ST_SECTION,CERATEDDOC_ST_NAME,IntToStr(CWithCreated));                
+               
+               // Pour l'instant on ne va pas plus loin (Si au moins 1 doc, destinataire du mail, donc OK)
+               Exit;  
+           End;                                                                                               
+            
+          end
+          else
+             logger_NAS(oNasDomClient,'Résultat de la recherche KO error:' + oNasLibClient.Errcode + ',' + oNasLibClient.Errmsg, CALLER, LOG_WARNING);
+  		
+          if libItems<>Nil then libItems.free;  
+          if search<>Nil then search.free;
+          if OEvents<>Nil then OEvents.Free();
+        end;
+        
+    Finally
+        oNasLibClient.Logout;
+    End;    
+end;
+
+
+Begin
+ 
+	SCParams:=TScriptParams.Create;
+
+	if SCParams.paramsFilename='' then
+	Begin
+// 		logger('Script appelé hors contexte NAS exec_script',caller,LOG_ERROR,LogFile);
+//		OutputErr('Script appelé hors contexte NAS exec_script');
+		SetExitCode(1);
+		exit;
+	End;
+
+  Try
+  	SCResults:=TScriptResult.Create;
+
+    oNasDomClient:=TNasDomClient.create;
+    
+    CUrl:=Trim(SCParams.NasURL);
+    
+ 		if not NASConnect(oNasDomClient, CUrl) then
+		Begin
+			SCResults.errmsg:='Erreur : Impossible de joindre le serveur en mode domaine sur l''URL "' + CUrl + ' (cf. Paramètre domaine : DOMAIN/NAS_URL)", veuillez contacter votre administrateur...';
+			Exit;
+		End;
+
+		if not NASLogin(oNasDomClient, SCParams.OwnerLogin,SCParams.OwnerPasswd, True) then 
+		Begin
+			SCResults.errmsg:='Erreur : Impossible de se connecter sur le serveur en mode domaine, veuillez contacter votre administrateur...';
+			exit;
+		End;
+      
+    OOwner:=ONasDomClient.LoggedOwner;
+
+   logger_NAS(oNasDomClient,StringOfChar('=',60), CALLER, LOG_INFO);
+   logger_NAS(oNasDomClient,CALLER + ' V ' + Version + ' appelé pour le sous domaine "' + oOwner.subDomain + '" (login Owner : ' + SCParams.OwnerLogin + ') sur L''URL "' + CURL + '"', CALLER, LOG_INFO);
+//   logger_NAS(oNasDomClient,SCParams.ScriptUrl, CALLER, LOG_DEBUG);
+//   logger_NAS(oNasDomClient,'URL Accès NAS : ' + oNasDomClient.url, CALLER, LOG_DEBUG);
+//   logger_NAS(oNasDomClient,'URL sous domaine : ' + oNasDomClient.UriSubdomain, CALLER, LOG_DEBUG);
+
+     Dummy:='Liste des paramètres passés au script : ' + CRLF;
+     for x:= 0 to SCParams.ParamsList.count-1 do
+     Begin
+          dummy:=dummy + SCPArams.ParamsList.Names[x] + ' : ' + SCParams.GetValue(SCPArams.ParamsList.Names[x]);
+          if x<SCParams.ParamsList.count-1 then dummy:=dummy + CRLF;
+     End;
+     logger_NAS(oNasDomClient,dummy, CALLER, LOG_ERROR);
+  
+  	if not GetPAramOK(SCParams, SCResults) then
+   	Begin
+//    		SCResults.Errmsg:='Erreur : Paramètre(s) incorrect(s) : ' + CRLF + SCResults.Errmsg;
+    		exit;
+    End;
+
+    // Licence Notification OK pour le OWNER
+    if Not OOwner.Gedparamvalues.AsBoolean[LICNOTIF_GP_SECTION,LICNOTIF_GP_NAME] then
+    Begin
+         SCResults.Errmsg:='Erreur : Le paramètre "' + LICNOTIF_GP_SECTION + '/' + LICNOTIF_GP_NAME + '" n''est pas actif pour le sous-domaine "' + OOwner.subdomain + '"';
+         logger_NAS(oNasDomClient,SCResults.Errmsg, CALLER, LOG_ERROR);
+         exit;
+    End;
+
+	// Serveur SMTP OK pour le OWNER
+		oNovSendSMTP:=GetSMTP(OOWner);
+		if (oNovSendSMTP=Nil) then
+		Begin
+			SCResults.errmsg:='Erreur : Aucun service d''envoi d''email (serveur SMTP), en état de fonctionnement, n''a pu être trouvé sur le serveur, contactez votre administrateur pour effectuer ce paramétrage...';
+      logger_NAS(oNasDomClient,SCResults.Errmsg, CALLER, LOG_ERROR);
+			exit;
+		End;
+
+  // Mail modèle OK pour le OWNER
+    OGedParamMail:=OOwner.Gedparamvalues.Find(MAILTEMPL_GP_SECTION,MAILTEMPL_GP_NAME);
+    if OGedParamMail = Nil then
+    Begin
+         SCResults.Errmsg:='Erreur : Le paramètre "' + MAILTEMPL_GP_SECTION + '/' + MAILTEMPL_GP_NAME + '" n''est pas présent pour le sous-domaine "' + OOwner.subdomain + '"';
+         logger_NAS(oNasDomClient,SCResults.Errmsg, CALLER, LOG_ERROR);
+         exit;
+    End
+    Else
+    Begin
+      MailObject:=Trim(OGedParamMail.Value);
+      if OGedParamMail.ValueBlobFilled then 
+          MailBody:=OGedParamMail.GetAlphaBlobValue
+      Else
+      Begin
+         SCResults.Errmsg:='Erreur : La valeur Blob du paramètre "' + MAILTEMPL_GP_SECTION + '/' + MAILTEMPL_GP_NAME + '" n''est pas rempli"' + OOwner.subdomain + '"';
+         logger_NAS(oNasDomClient,SCResults.Errmsg, CALLER, LOG_ERROR);
+      End;
+    End;
+    
+   OOWner.GedUsers.load(True);
+   if OOwner.GedUsers.count > 0 then
+   Begin
+      SCResults.DataResult:=SCResults.DataResult + 'Nb total d''utilisateurs à traiter : '+intTostr(OOwner.GedUsers.count) + CRLF;
+      logger_NAS(oNasDomClient,'Nb utilisateurs à traiter : '+intTostr(oNasDomClient.loggedOwner.GedUsers.count), CALLER, LOG_DEBUG);
+   End
+   Else
+   Begin
+      SCResults.DataResult:=SCResults.DataResult + 'Aucun utilisateurs à traiter...' + CRLF;
+      logger_NAS(oNasDomClient,'Aucun utilisateurs à traiter...', CALLER, LOG_DEBUG);
+      Exit
+   End;
+  
+   ONasLibClient:=TNasLibClient.Create();
+   if not GEDConnect(ONasLibClient, cURL) then
+	 Begin
+			SCResults.errmsg:='Erreur : Impossible de joindre le serveur en mode GED, veuillez contacter votre administrateur...';
+      logger_NAS(oNasDomClient,'Impossible de se connecter en mode GED...', CALLER, LOG_DEBUG);
+			Exit;
+		End;
+
+   Gusers:=TGedusers.create(nil,nil);
+
+   for i:=0 to oNasDomClient.loggedOwner.GedUsers.count-1 do
+   begin
+        // Si on veut se servir des paramètres d'abonnement directement liés à l'utilisateur
+        if TraiteUser(OOWner.GedUsers[i], SCParams.OwnerLogin, SCParams.OwnerPasswd, cLib_id,ONasLibClient) then
+        Begin
+           Gusers.add(OOWner.GedUsers[i],'');
+           logger_NAS(oNasDomClient,'GedUSer destinataire du mail' + OOWner.GedUsers[i].login, CALLER, LOG_DEBUG);
+        End
+        Else
+           logger_NAS(oNasDomClient,'GedUSer NON destinataire du mail' + OOWner.GedUsers[i].login, CALLER, LOG_DEBUG);
+   end;
+  
+   logger_NAS(oNasDomClient,'Après tous les GedUSer', CALLER, LOG_DEBUG);
+
+   if Gusers.count=0 then 
+   Begin
+      logger_NAS(oNasDomClient,'Aucun GedUser à qui envoyer un mail, on sort...', CALLER, LOG_DEBUG);
+      SCResults.DataResult:=SCResults.DataResult + 'Aucun utilisateur à qui envoyer des mails...' + CRLF ;
+      exit;
+   End
+   Else
+       SCResults.DataResult:=SCResults.DataResult + '****Liste d''utilisateurs à qui on doit finalement envoyer un mail (' + IntToStr(Gusers.count) + ') ****' + CRLF ;
+
+   ParseEmail(oNasDomClient, MailObject, MailBody);
+
+   With oNovSendSMTP do
+   Begin
+        // TODO : Chercher le From du WONER + puis paramètres TNovaSend (macro possible), ou rien si non Vide
+      //FromAddr.add('norelay@noreplay.fr');
+      if OOWner.contact.email<>'' then
+             FromAddr.add(OOWner.contact.email)
+      else
+      Begin
+        // Pas de gestion de macro pour le moment
+         if (defaultSenderAddr<>'') and  (pos('%', defaultSenderAddr) = 0) then
+               FromAddr.add(defaultSenderAddr);
+         // On laisse le serveur de soumission se débrouiller...
+//         else
+//               FromAddr.add('norelay@noreplay.fr');
+  //      ReplyToAddr.add('norelay@noreplay.fr');
+      End;
+      
+        Subject:= MailObject;
+        body:= MailBody;
+   End;
+
+   logger_NAS(oNasDomClient,'Modèle mail récupéré :' + CRLF + 
+     'Objet : ' + oNovSendSMTP.Subject + CRLF +
+     'Corps : ' + oNovSendSMTP.body
+     , CALLER, LOG_DEBUG);
+   
+         
+    for i:=0 to Gusers.count-1 do
+    Begin
+         logger_NAS(oNasDomClient,'Ajout de ' + Gusers[i].contact.email + ' en Destinataire', CALLER, LOG_DEBUG);
+         ONovSendSMTP.BCcAddr.add(Gusers[i].contact.email);
+         SCResults.DataResult:=SCResults.DataResult + 'GedUser : ' + Gusers[i].login + ' - email : ' + Gusers[i].contact.email + CRLF ;
+    End;
+      
+    if not ONovSendSMTP.ConnectAndSend then
+    Begin
+       logger_NAS(oNasDomClient,'Erreur lors de l''envoi de mail :' + CRLF + ONovSendSMTP.Trace.Text, CALLER, LOG_DEBUG);
+       SCResults.Errmsg:='Erreur technique lors de l''envoi du mail, veuillez contacter votre Administrateur';
+    End
+    Else
+    Begin
+       logger_NAS(oNasDomClient,'Envoi de mail OK', CALLER, LOG_DEBUG);
+       SCResults.DataResult:=SCResults.DataResult + 'Email envoyé avec succès' + CRLF ;
+    End;
+
+  Except
+		SCResults.errmsg:='Erreur au runtime : ' + ExceptionParam;
+
+	finally
+ 
+    SCResults.Send;
+	  
+    if Gusers <> Nil then Gusers.free;
+    if oNasDomClient<>Nil then
+    Begin 
+        oNasDomClient.domainLogout;
+        oNasDomClient.Close;
+        oNasDomClient.free;
+    End;
+    if SCResults<>Nil Then SCResults.Free();
+    if SCParams<>Nil then SCParams.Free();
+    if oNovSendSMTP<>Nil then oNovSendSMTP.Free();
+  end;
+
+  
+End.

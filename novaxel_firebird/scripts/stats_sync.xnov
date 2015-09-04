@@ -1,0 +1,430 @@
+// TODO : mettre à false pour prod
+//{$DEFINE DEBUG}
+
+{
+	Création V1
+
+	Envoi d'un email des stats pour les synchro des Libs
+
+}
+
+{
+	MAJ V2 : 
+	- Ajout des nolog (ie lib non synchronisées) et stats sur ces libs...
+}
+
+
+Program stats_sync;
+{$I func_nas.xnov}
+{$I local_auth.xnov}
+
+
+var
+	ONasDomClient:TNasDomClient;
+	ErrMsg:String;
+	i,j:Integer;
+	NbSync, NbNoSync:integer;
+ 	OLogsAll, OLogsNoSync, OLogsNoSyncOrder:TLogSyncs;
+	OLogNoSync:TLogSync;
+	FmtSync:String;
+	FmtNoSync:String;
+	FileLogSync:String;
+	FileLogNoSync:String;
+
+	Libs:TLibraries;
+	oLib:TLibrary;
+	oFBServer:TFBServer;
+	OOwner:TOwner;
+
+	DateDeb,DateFin:TDateTime;
+
+Function GetLogsSync(oNasDomClient:TNasDomClient;owner_id, lib_id:Integer;FromTime,ToTime:TDateTime):TLogSyncs;
+begin
+ 	Result:=TLogSyncs.create(oNasDomClient);
+ 	Result.Load(owner_id, lib_id,FromTime,ToTime,32767,True);
+end;
+
+Procedure Log(Msg:String);
+Begin
+	{$IFDEF DEBUG}
+		outputErr(Msg);
+	{$ENDIF}
+End;
+
+Function sendmailLogSync(FromDate,ToDate:TDateTime):boolean;
+Var
+	//CALLER:String;
+	LstVar:TStringList;
+	LstDest:TStringList;
+	FileAtt:TStringList;
+
+	ParserDelim:String;
+	ValParam:String;
+
+	AdminAddress:String;
+
+	Body, subject:String;
+	ValBlb:TStringStream;
+	ErrSendMail:Tstrings;
+	i:Integer;
+	ocontType:TContType;
+	oLib:TLibrary;
+
+Begin
+	//CALLER:='sendmailSync';
+
+	Result:=False;
+
+	Try
+
+		NASGetDomParamValues(oNasDomClient, 'DOMAIN','MACRO_DELIM',ParserDelim,Nil);
+		ParserDelim:=trim(ParserDelim);
+
+		if ParserDelim='' then
+		begin
+			Log('Impossible de récupérer la valeur du délimiteur de Macro en TDOMPARAM : ' + oNasDomClient.Errcode + ' : ' + oNasDomClient.Errmsg);
+			Exit;
+		end
+		Else
+			Log('Delim MAcro : "' + ParserDelim + '"');
+
+		// Adresse email Admin, recherchée dans le contact principal
+		AdminAddress:=oNasDomClient.loggedOwner.contact.email;
+		// Si non trouvée, on essaie de récupérer l'adresse générale
+		if AdminAddress='' then 
+		Begin
+			Log('Adresse contact admin vide, on essaie avec le paramètre général: "' + oNasDomClient.DomainAdminEmail + '"');
+			AdminAddress:=oNasDomClient.DomainAdminEmail;
+		End;
+		
+		Log('Adresse admin finale : "' + AdminAddress + '"');
+
+		// On récupère les variables identifiées
+		Log('Récupération des variables nécessaires au traitement des mails');
+
+		LstVar:=TStringList.Create();
+
+		LstVar.add('admin_email' + '=' + AdminAddress);
+
+
+		LstVar.add('sync_deb' + '=' + FormatDateTime('dd/mm/yyyy hh:mm',FromDate));
+		LstVar.add('sync_fin' + '=' + FormatDateTime('dd/mm/yyyy hh:mm',ToDate));
+		LstVar.add('sync_jour' + '=' + FormatDateTime('dd/mm/yyyy',FromDate));
+
+		LstVar.add('domain_name' + '=' + trim(oNasDomClient.DomainName));
+		LstVar.add('domain_ServerType' + '=' + trim(oNasDomClient.ServerType));
+		LstVar.add('domain_ServerVersion' + '=' + trim(oNasDomClient.ServerVersion));
+		LstVar.add('domain_DomainVersion' + '=' + trim(oNasDomClient.DomainVersion));
+		LstVar.add('domain_DomainVersion' + '=' + trim(oNasDomClient.DomainVersion));
+		LstVar.add('domain_Encrypted' + '=' + BoolToStr(oNasDomClient.Encrypted,BOOLSTR));
+
+
+		// Signature à créer en dernier car elle peut contenir des variables elle-même
+		ValBlb:=TStringStream.Create('');
+		if NASGetDomParamValues(oNasDomClient, 'DOMAIN','ADMIN_EMAIL_SIG',ValParam,ValBlb) then
+		begin
+			Log('Signature Admin: ' + ValBlb.Datastring);
+			LstVar.add('signature' + '=' + ParseText(trim(ValBlb.Datastring),ParserDelim,LstVar,False));
+		End
+		Else
+		Begin
+			Log('Impossible de récupérer la valeur du paramètre Signature Admin: ' + oNasDomClient.Errcode + ' : ' + oNasDomClient.Errmsg);
+			setexitCode(1);
+			Exit;
+		End;
+
+		LstDest:=TStringList.Create();
+		LstDest.add(AdminAddress);
+
+		// Ajout d'autres contacts Admin de type technique, le cas échéant)
+		oNasDomClient.loggedOwner.contacts.load(True);
+		for i:=0 to oNasDomClient.loggedOwner.Contacts.count-1 do
+		Begin
+			// TODO : vérifier cette règle de gestion...
+			if (oNasDomClient.loggedOwner.Contacts[i].email<>'') and (oNasDomClient.loggedOwner.Contacts[i].ContTypes.Find('Technique')<>nil) then
+			Begin
+				Log('Ajout de "' +  oNasDomClient.loggedOwner.Contacts[i].email + '" en liste des destinataires admin');
+				LstDest.add(oNasDomClient.loggedOwner.Contacts[i].email);
+			End
+			Else
+			Begin
+				Log('Le contact Admin N° ' + Int64ToStr(oNasDomClient.loggedOwner.Contacts[i].Id) + ' à l''adresse  "' + oNasDomClient.loggedOwner.Contacts[i].EMail + '" n''est pas concerné par ce mail');
+			End;
+		End;
+			
+		ValBlb:=TStringStream.Create('');
+		if Not NASGetDomParamValues(oNasDomClient, 'SYNCHRO','EMAIL_STATS',ValParam,ValBlb) then
+		Begin
+			Log('Impossible de récupérer la valeur du paramètre de message email: ' + oNasDomClient.Errcode + ' : ' + oNasDomClient.Errmsg);
+			Exit;
+		End;
+
+		subject:=ValParam;
+		Body:=trim(ValBlb.Datastring);
+
+		if (body = '') or (subject='')  then
+		Begin
+			Log('Subject et/ou Body est vide');
+		End
+		else // Envoie mail...
+		Begin
+			ErrSendMail:=TStringList.Create();
+			FileAtt:=TStringList.Create();
+			FileAtt.add(FileLogSync);
+			FileAtt.add(FileLogNoSync);
+
+
+			subject:=ParseText(subject,ParserDelim,LstVar,False);
+			Body:=ParseText(Body,ParserDelim,LstVar,False);
+//  					if logfile <>'' then logger('sujet après parse : "' + subject + '"', CALLER, LOG_DEBUG, LogFile);
+//  					if logfile <>'' then logger('Body après parse : "' + Body + '"', CALLER, LOG_DEBUG, LogFile);
+
+			Log('Envoi d''email');
+
+			if not SendMail(
+				subject, // Obj
+				LstDest, // dest
+				Body, // body
+				FileAtt, // fichiers
+				AdminAddress, // From
+				ErrSendMail
+				) then
+			Begin
+				Log('Envoi de mail administrateur avorté : ' + ErrSendMail.Text);
+			End
+			Else
+			Begin
+				Log('Message envoyé');
+			End;
+		End;
+
+		Result:=True;
+					
+	Finally
+		if LstVar<>nil then LstVar.Free();
+		if LstDest<>nil then LstDest.Free();
+		if ValBlb <> nil then ValBlb.Free();
+		if ErrSendMail <> nil then ErrSendMail.Free();
+		if ocontType<>nil then ocontType.Free();
+		if FileAtt<>nil then FileAtt.Free();
+
+	End;
+End;
+
+
+Begin
+
+	oNAsDomClient:=TNasDomClient.Create();
+
+	try  
+		if not NASConnect(oNasDomClient, GetNASHost('')) then
+		Begin
+			ErrMsg:='"Le serveur NAS n''est pas joignable !"';
+			exit;
+		End;
+
+		if not NASLogin(oNasDomClient, AdmNASLogin,AdmNASHashedPasswd, True) then 
+		Begin
+			ErrMsg:='"Impossible de se connecter au serveur NAS !"';
+			exit;
+		End;
+
+		// Par défaut de la veille 08:00 à aujourd'hui 08:00
+		// Atettnion, la PS sous-jacente travaille sur les dates de fin de synchro en référence de filtre
+		DateDeb:=NasToDateTime(FormatDateTime('yyyy-mm-dd',Date-1) + ' 08:00:00');
+		DateFin:=NasToDateTime(FormatDateTime('yyyy-mm-dd',Date) + ' 08:00:00');
+
+ 		Log('Deb : ' + DateTimeToNas(DateDeb));
+ 		Log('Fin : ' + DateTimeToNas(DateFin));
+
+		FileLogSync:='/tmp/novasync_logs_' + FormatDateTime('yyyy-mm-dd',DateDeb) + '.log';
+
+		Deletefile(FileLogSync);
+{
+SET WIDTH BIB 4;
+SET WIDTH FIN_OK 3;
+SET WIDTH NO_OK 5;
+SET WIDTH CLIENT 30;
+SET WIDTH SERVEUR 30;
+SET WIDTH DOSSIER 40;
+SET WIDTH DEBUT 20;
+SET WIDTH FIN 20;
+}
+
+
+{
+ 	Owner_Id: integer; [Lecture seul]
+ 	Library_Id: integer;
+ 	time_start: TDateTime;
+ 	time_end: TDateTime;
+ 	Duration: integer;
+ 	size_before: int64;
+ 	size_after: int64;
+ 	size_transfered: int64;
+ 	state: boolean;
+ 	ErrComment: string;
+ 	library_title: string;
+ 	owner_name: string;
+}
+
+
+		FmtSync:='%4s %-3s %-5s %-40.40s %-40.40s %-20.20s %-20.20s %10.10s %10.10s %10.10s';
+
+		AppendFichier(format(FmtSync,['BIB','FIN','NO_OK','CLIENT','LIB','DEBUT','FIN','MO_AVANT','MO_APRES','KO_TRANSF']) + CR + LF,FileLogSync);
+
+		AppendFichier('==== === ===== ======================================== ======================================== ==================== ===================== ========== ========== =========='  + CR + LF,FileLogSync);
+
+		// V2 : Ajout des stats pour les Lib NON synchronisées la veille
+		
+		FileLogNoSync:='/tmp/novasync_logs_nosync_' + FormatDateTime('yyyy-mm-dd',DateDeb) + '.log';
+
+		Deletefile(FileLogNoSync);
+
+		FmtNoSync:='%4s %-40.40s %-40.40s %-20.20s %10.10s %-20.20s';
+
+		AppendFichier(format(FmtNoSync,['BIB','CLIENT','LIB','DER_SYNC','NB_NOSYNC','COMMENT']) + CR + LF,FileLogNoSync);
+
+		AppendFichier('==== ======================================== ======================================== ==================== ========== ===================='  + CR + LF,FileLogNoSync);
+
+		// Toutes les lib en cours
+		//oOwner.Libraries.AllStates:='*';
+		ONasDomClient.libraries.AllStates:='&1';
+		ONasDomClient.libraries.load(True);
+		Libs:=ONasDomClient.libraries;
+
+		Log('Nb libs : ' + Int64ToStr(Libs.count));
+
+		// Création d'un curseur temporaire pour tri...
+		OLogsNoSyncOrder:=TLogSyncs.create(oNasDomClient);
+
+
+		for i:=0 to Libs.count-1 do
+		begin
+//			Log('Traitement de la lib : ' + Int64ToStr(Libs[i].id));
+
+			OLogsAll:=GetLogsSync(oNasDomClient,0,Libs[i].id, DateDeb,DateFin);
+			OLogsAll.SortCriterias.clear; 
+			OLogsAll.SortCriterias.add(SORT_LOGSYNC_TIME_END,True); // True = descendant
+			OLogsAll.sort;
+
+			if OLogsAll.count>0 then
+			Begin
+//				Log('    LibId Syncho veillle : ' + Int64ToStr(Libs[i].id));
+				for j:=0 to OLogsAll.count-1 do
+				begin
+					AppendFichier(
+						format(FmtSync,
+							[
+								Int64ToStr(OLogsAll[j].Library_Id),
+								iif(OLogsAll[j].syncState,'OK','KO'),
+								iif(OLogsAll[j].syncState,'','*****'),
+								OLogsAll[j].owner_name,
+								OLogsAll[j].library_title,
+								DateTimeToNas(OLogsAll[j].time_start),
+								DateTimeToNas(OLogsAll[j].time_end),
+								Int64ToStr(OLogsAll[j].size_before),
+								Int64ToStr(OLogsAll[j].size_after),
+								Int64ToStr(OLogsAll[j].size_transfered)
+								
+							]
+						)  + CR + LF,
+						FileLogSync
+					);
+					NbSync:=NbSync+1;
+				end;
+			End
+			Else // PAs de log pour la journée précédente, on cherche le dernier log possible
+			Begin
+				NbNoSync:=NbNoSync+1;
+				// On redemande toutes les synchros pour la lib en cours...
+				OLogsNoSync:=GetLogsSync(oNasDomClient,0,Libs[i].id, 0,DateFin);
+
+				if OLogsNoSync.count> 0 then
+				Begin
+//					Log('    LibId synchro 1 fois : ' + Int64ToStr(Libs[i].id));
+					// Affectation directe de la dernière ligne trouvée
+					OLogsNoSync[OLogsNoSync.count-1].ErrComment:='Déjà Synchronisée';
+
+					OLogsNoSyncOrder.AddItem(OLogsNoSync[OLogsNoSync.count-1]);
+				End
+				Else
+				Begin
+//					Log('    LibId synchro jmais : ' + Int64ToStr(Libs[i].id));
+					// Création d'un nouvel objet
+					OLogNoSync:=TLogSync.create(oNasDomClient);
+
+					OOwner:=NASGetOwner(oNasDomClient,Libs[i].Owner_Id);
+
+					OLogNoSync.Owner_Id:=Libs[i].Owner_Id;
+					OLogNoSync.Library_Id:=Libs[i].id;
+					OLogNoSync.time_start:=Libs[i].create_date; // Date de création de la base pour avoir un compteur Ok en fin
+					OLogNoSync.time_end:=Libs[i].create_date; // Idem : Date de création de la base pour avoir un compteur Ok en fin
+					OLogNoSync.duration:=0;
+					OLogNoSync.size_before:=0;
+					OLogNoSync.size_after:=0;
+					OLogNoSync.size_transfered:=0;
+					OLogNoSync.syncState:=False;
+					OLogNoSync.ErrComment:='Jamais synchronisée';
+					OLogNoSync.library_title:=Libs[i].Title;
+					OLogNoSync.owner_name:= OOwner.Name;  					
+
+					OLogsNoSyncOrder.AddItem(OLogNoSync);
+					
+				End;
+			End;
+		End;
+
+		// Tri par défaut du curseur sur DATE de dernière syncro desc
+		OLogsNoSyncOrder.SortCriterias.clear; 
+		OLogsNoSyncOrder.SortCriterias.add(SORT_LOGSYNC_TIME_END,True); // True = descendant
+		OLogsNoSyncOrder.sort;
+	
+		For i:=0 to OLogsNoSyncOrder.count-1 do
+		Begin
+//					Log('    LibId OK synchro : ' + Int64ToStr(Libs[i].id));
+//				Log(OLogsNoSyncOrder[i].AsString);
+			AppendFichier(
+				format(FmtNoSync,
+					[
+						Int64ToStr(OLogsNoSyncOrder[i].Library_Id),
+						OLogsNoSyncOrder[i].owner_name,
+						OLogsNoSyncOrder[i].library_title,
+						DateTimeToNas(OLogsNoSyncOrder[i].time_end),
+						Int64ToStr(daysBetween(OLogsNoSyncOrder[i].time_end, DateDeb)),
+						OLogsNoSyncOrder[i].ErrComment
+					]
+				)  + CR + LF,
+				FileLogNoSync
+			);
+		End;
+
+		AppendFichier( + CR + LF + '==> ' + Int64ToStr(NbSync) + ' synchronisations J-1', FileLogSync);
+		AppendFichier( + CR + LF + '==> ' + Int64ToStr(NbNoSync) + ' bases non synchronisées J-1', FileLogNoSync);
+
+		sendmailLogSync(DateDeb,DateFin);
+		
+
+	Finally
+		if ErrMsg<>'' then
+		Begin
+			Log(ErrMsg);
+			SetExitCode(1);
+		End;
+
+		Deletefile(FileLogSync);
+		Deletefile(FileLogNoSync);
+
+		Try
+			FreeNASRes();
+			Libs.Free();
+			OLogsAll.free();
+			OLogsNoSync.free();
+			OLogsNoSyncOrder.free()
+			OLogNoSync.Free();
+			OOwner.free();
+			oNAsDomClient.Free();
+		Except
+		End;
+	End;
+
+End.

@@ -1,0 +1,43 @@
+{$DEFINE DEBUG}
+
+Program create_cloud;
+{$I func_cloud.xnov}
+
+var
+	paramsCC:TScriptParams;
+	CALLER:String;
+
+Begin
+	CALLER:='create_cloud_direct';
+	paramsCC := TScriptParams.create;
+
+	if (paramsCC.paramsFilename='') or (paramsCC.paramsList.count<1) then
+	Begin
+		OutputErr('Script appelé hors contexte NAS exec_script ou Nb paramètres incorrect...');
+		SetExitCode(1);
+		exit;
+	End;
+
+	LogFile:=StrReplace(LogFileBase,'#id#',FormatDateTime('yyyymmdd_hhnnss_zzz',Now))
+
+	logger('', CALLER, LOG_INFO, LogFile);
+	logger('==================================================================================================================================================', CALLER,LOG_INFO,LogFile);
+	logger('                                         NOUVEL APPEL DIRECT DE CREATE CLOUD', CALLER,LOG_INFO,LogFile);
+	logger('==================================================================================================================================================', CALLER,LOG_INFO,LogFile);
+	logger('fichier paramsCC :' + paramsCC.paramsFilename,CALLER,LOG_DEBUG,LogFile);
+	logger('Appel de "' + CALLER +'" avec les paramètres :' + CRLF + trim(paramsCC.paramsList.Text),CALLER,LOG_DEBUG,LogFile);
+
+
+	If not create_cloud() then
+		logger('Création compte cloud avorté',CALLER,LOG_ERROR,LogFile)
+	Else
+		logger('Création compte cloud Ok',CALLER,LOG_INFO,LogFile);
+
+	//SetExitCode(0);
+	paramsCC.Free();
+
+	// Librératin des ressources partagées
+	FreecloudRes;
+
+	logger('Fin de procédure "' + CALLER + '"',CALLER,LOG_DEBUG,LogFile);
+End.

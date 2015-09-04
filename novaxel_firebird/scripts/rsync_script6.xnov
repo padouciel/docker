@@ -1,0 +1,1041 @@
+{
+	Script de synchronisation de bibliothèque
+
+	Ne prends en charge qu'à partir de la version 6 de novasyncClient (versions précédentes prises en charge par procédure Bash ancienne Infra)
+
+TODO :
+	- FULLTEXT.FDB NOT RO... ==> Ok 16/05/2015
+	- Mise RO de volumes VOL*.FDB : prendre en compte l'access_mode...
+}
+
+{$DEFINE DEBUG}
+
+Program sync;
+// Functions/variables/constantes communes...
+{$I func_sync.xnov}
+
+Const
+	MIN_NAS_VER='1.6.0.1';
+
+
+var
+	LogFile: string;
+
+	// Caller pour ce program (cf. logger) : Peut-être modifié par les différentes procédures...
+	CALLER:String;
+
+	LoginOwner:string;
+	LibId:integer;
+	slibID: string;
+	libGUID:string;
+
+	oNasDomAdmin:TNasDomClient;
+	oLib:TLibrary;
+
+	FullTextReq:Boolean;
+	FullTextSize:Int64;
+
+{
+	Routine de connexion au NAS + Init des variables globales nécessaires aus traitements...
+}
+function NASSyncConnect():boolean;
+Var
+	CALLER:String;
+	// Item des informations de la lib en cours de synchro (contenu dans le fichier de requête)
+	SyncReqItems:TStringList;
+Begin
+	Result:=True;
+	CALLER:='NASSyncConnect';
+
+	Try
+
+		SyncReqItems:=TStringList.Create;
+		SyncReqItems:=GetSyncReqItem(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + DIRDB_TEMPDIR + clPathDelim + SYNC_FILE_REQUEST + '.' + IntToStr(LibId));
+
+		// Toutes les vérifications d'entrée ont été faite lors de l'init, c'est inutile de le refaire ici...
+		//slibID:=SyncReqItems[0];
+		LoginOwner:=SyncReqItems[1];
+		if SyncReqItems[3] <> nil then libGUID:=SyncReqItems[3];
+
+		LibId:=strToInt64(slibID);
+
+		// Demande de synchro avec Fulltext...
+		if SyncReqItems.count > 10 then
+			FullTextReq:=StrToInt64(SyncReqItems[10]) <> 0;
+
+
+		oNasDomAdmin:=SyncNASConnect(GetNASHost(''), AdmNASLogin, AdmNASHashedPasswd,logfile);
+	Except
+		logger('Erreur dans la procédure/function "' + CALLER + '" : ' + ExceptionParam + ' - propagation vers la procédure appelante...', CALLER, LOG_WARNING, LogFile);
+		RaiseLastException;
+
+	Finally
+		if SyncReqItems<>nil then SyncReqItems.free;
+	End;
+End;
+
+{
+	Test de sauvegarde en cours et temporisation si c'est le cas...
+	Si on arrive en bout de temporisation c'est que la sauvegarde n'a pas finie et qu'il faut donc arrêter le script en cours
+}
+function tempo_sav(dirbase: String):boolean; 
+var
+	flag:Boolean;
+	cpt:Integer;
+	CALLER:String;
+Begin
+	CALLER:='tempo_sav';
+	Result:=True;
+	if Not FileExists(IncludeTrailingPathDelimiter(dirbase) + FLAG_SAV) then exit;
+
+	logger('Sauvegarde en cours sur   : "' + Dirbase + '" ; on temporise', CALLER, LOG_INFO, LogFile);
+	flag:=True;
+	cpt:=1;
+
+	while flag do
+	Begin
+		logger('Boucle de temporisation d''attente de fin de sauvegarde : ' + intToStr(SAV_NB_TEMPO) + ' ; Tempo : ' + intToStr(SAV_TEMPO) + ')... Sortie du script en erreur',CALLER, LOG_DEBUG, LogFile);
+		// Dépassement de tempo...
+		if cpt > SAV_NB_TEMPO then
+		Begin
+			// C'est la procédure parente qui doit faire le choix de savoir si on continue ou pas...
+			logger('Temporisation d''attente de fin de sauvegarde dépassée (NB : ' + intToStr(SAV_NB_TEMPO) + ' ; Tempo : ' + IntToStr(SAV_TEMPO) + ')... Sortie du script en erreur',CALLER, LOG_WARNING, LogFile);
+			Result:=False;
+			Exit;
+
+		End;
+		sleep(SAV_TEMPO * 1000);
+		cpt:=cpt + 1;
+		flag:=FileExists(IncludeTrailingPathDelimiter(dirbase) + FLAG_SAV);
+	End;
+End;
+
+{
+	Copie des volumes de production vers le répertoire temporaire
+	Génère la liste des fichiers pour le client...
+}
+Function VolCopy(dirbase: String):Boolean;
+var
+	CALLER:String;
+	lstVol:TstringList;
+	i:integer;
+	SizeVol:Int64;
+	VolDate:TDateTime;
+	oFDBFile:TFDBFile;
+
+	VolLocked:boolean;
+
+Begin
+	CALLER:='VolCopy';
+
+	logger('Appel de Procédure ' + CALLER + ' pour le répertoire "' + dirbase + '"',CALLER ,LOG_INFO, LogFile);
+
+	Result:=True;
+
+
+	Try
+
+		// Enregistrement de la taille des fichiers copiés en temporaire
+		SizeVol:=GetFileSize(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + VOL_PRINC) + GetFileSize(GetLastVolume(GetRsyncEnv('MODULE_PATH')));
+
+		if (FullTextReq) and (FileExists(IncludeTrailingPathDelimiter(dirbase) + VOL_FULLTEXT)) then
+			SizeVol:=SizeVol + GetFileSize(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + VOL_FULLTEXT);
+
+		logger('Taille derniers volumes : ' + Int64ToStr(SizeVol),CALLER,LOG_DEBUG,LogFile);
+
+		logger('Enregistrement des fichiers de Taille des derniers volumes dans "' + GetRsyncEnv('MODULE_PATH') + '"', CALLER ,LOG_DEBUG, LogFile);
+
+		If not EcritFichier(int64ToStr(SizeVol),IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + SIZE_LASTVOL) then
+		begin
+			logger('Erreur lors de l''écriture des fichiers temporaires de tailles des derniers volumes' + ExceptionParam, CALLER ,LOG_WARNING, LogFile);
+		End;
+
+		if not oNasDomAdmin.loggedOwner.logged then NASSyncConnect;
+		oFDBFile:=TFDBFile.create(TNasDomClient(oNasDomAdmin));
+
+		// Création du fichier témoin de synchro en cours (pas d'autre action sur les volumes...
+		logger('Création du flag de synchro en cours "' + IncludeTrailingPathDelimiter(dirbase) + FLAG_SYNC_CRIT + '"', CALLER, LOG_DEBUG, LogFile);
+		If not EcritFichier('',IncludeTrailingPathDelimiter(dirbase) + FLAG_SYNC_CRIT) then
+		Begin
+			logger('1000 : Erreur lors de la création du flag de synchro : ' + ExceptionParam, CALLER, LOG_ERROR, LogFile);
+			RaiseException(erCustomError, '1000');
+		End;
+
+		// Synchro initiale ou non
+		if not FileExists(IncludeTrailingPathDelimiter(dirbase) + VOL_PRINC) then
+		Begin
+			logger('Aucun volume présent, il s''agit d''une synchronisation initiale', CALLER, LOG_INFO, LogFile);
+			if not EcritFichier('',IncludeTrailingPathDelimiter(dirbase) + LSTVOL_FILE) then
+			Begin
+				logger('1000 : Erreur lors de la création du fichier de liste des volumes : ' + ExceptionParam, CALLER, LOG_ERROR, LogFile);
+				RaiseException(erCustomError, '1000');
+			End;
+		End
+		Else
+		Begin
+			logger('Des volumes existent, il s''agit d''une synchronisation régulière', CALLER, LOG_INFO, LogFile);
+
+			lstVol:=TStringList.Create();
+
+			// Copie des fichiers
+			lstVol.Add(IncludeTrailingPathDelimiter(dirbase) + VOL_PRINC);
+			lstVol.add(GetLastVolume(dirbase));
+			// Ajout FULLTEXT.FDB en protocole V8
+			if (FullTextReq) and (FileExists(IncludeTrailingPathDelimiter(dirbase) + VOL_FULLTEXT)) then lstVol.add(IncludeTrailingPathDelimiter(dirbase) + VOL_FULLTEXT);
+
+			for i:=0 to lstVol.count-1 do
+			begin
+				// On ne copie pas si ça existe déjà à la destination (précédente synchro avortée)
+				if FileExists(IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + clPathDelim + ExtractFileName(lstVol[i])) then
+					logger('Le volume "' + ExtractFileName(lstVol[i]) + '" existe déjà à la destination, on ne copie pas', CALLER, LOG_INFO, LogFile)
+				else
+				Begin
+
+					VolDate:=GetFileDate(lstVol[i]);
+					logger('Date du fichier d''orgine "' + ExtractFileName(lstVol[i]) + '" : ' + DateTimeToNas(VolDAte), CALLER, LOG_DEBUG, LogFile);
+
+					logger('Récupération des informations détaillées du volume "' + ExtractFileName(lstVol[i]) + '"',CALLER ,LOG_DEBUG, LogFile);
+					oFDBFile.LibraryId:=LibId;
+					oFDBFile.name:=ExtractFileName(lstVol[i]);
+					oFDBFile.load(true);
+					
+					// Seulement pour les volumes en RW...
+					if not oFDBFile.readOnlyMode then
+					Begin
+						logger('Verrouillage du fichier "' + ExtractFileName(lstVol[i]) + '"', CALLER, LOG_DEBUG, LogFile);
+						if not oNasDomAdmin.fbadmin(libID,ExtractFileName(lstVol[i]),'lock') then
+						begin
+							logger('1000 : Impossible de verrouiller le volume "' + ExtractFileName(lstVol[i]) + '" ; Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_ERROR, LogFile);
+							RaiseException(erCustomError, '1000');
+						End;
+						VolLocked:=true;
+					End;
+
+					logger('Copie du volume "' + ExtractFileName(lstVol[i]) + '" vers "' + IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR  + '"', CALLER, LOG_DEBUG, LogFile);
+					if not CopyFile(lstVol[i], IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + clPathDelim + ExtractFileName(lstVol[i])) then
+					Begin
+						logger('1000 : Erreur lors de la copie du volume : ' + ExtractFileName(lstVol[i]), CALLER, LOG_ERROR, LogFile);
+						RaiseException(erCustomError, '1000');
+					End;
+
+					logger('Affectation de la date d''origine à la copie "' + IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + clPathDelim + ExtractFileName(lstVol[i]) + '" : ' + DateTimeToNas(VolDAte) + ' en remplacement de ' + DateTimeToNas(GetFileDate(IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + clPathDelim + ExtractFileName(lstVol[i]))), CALLER, LOG_DEBUG, LogFile);
+					if not SetFileDateTime(IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + clPathDelim + ExtractFileName(lstVol[i]),0, 0,VolDAte) then
+						logger('1000 : Erreur lors de l''affectaiton de la date à la copie du volume', CALLER, LOG_WARNING, LogFile);
+
+					if VolLocked then
+					Begin
+						logger('Déverrouillage du fichier "' + ExtractFileName(lstVol[i]) +'"', CALLER, LOG_DEBUG, LogFile);
+						if not oNasDomAdmin.fbadmin(libID,ExtractFileName(lstVol[i]),'unlock') then
+						begin
+							logger('1000 : Impossible de déverrouiller le volume "' + ExtractFileName(lstVol[i]) + '" ; Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_WARNING, LogFile);
+						End;
+
+					End;
+					VolLocked:=False;
+					logger('Mise en place des propriétaire/groupe "' + DIRDB_USER + ' / ' + DIRDB_GROUP + '" sur le fichier copié "' + IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR  + clPathDelim + ExtractFileName(lstVol[i]) + '"', CALLER, LOG_DEBUG, LogFile);
+					if not SysRun('/bin/chown','' + DIRDB_USER + ':' + DIRDB_GROUP + ' ' + IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + clPathDelim + ExtractFileName(lstVol[i])) then
+						// PAs d'erreur fatale, on tente de passr quand meme...
+						logger('Erreur lors du changement de propriétaire sur : ' + ExtractFileName(lstVol[i]), CALLER, LOG_WARNING, LogFile);
+					
+				End;
+			End;
+
+			// Liste des fichiers
+			lstVol:=TStringList.Create();
+			lstVol:=ChargeListeFichiers(dirbase,VOL_PATTERN,0,False);
+			lstVol.add(IncludeTrailingPathDelimiter(dirbase) + VOL_PRINC);
+			if (FullTextReq) and (FileExists(IncludeTrailingPathDelimiter(dirbase) + VOL_FULLTEXT)) then lstVol.add(IncludeTrailingPathDelimiter(dirbase) + VOL_FULLTEXT);
+			lstVol.sort;
+
+			// Suppresion des path
+			for i:=0 to lstVol.count-1 do
+				lstVol[i]:=ExtractFileName(lstVol[i]);
+			Try
+				lstVol.SaveToFile(IncludeTrailingPathDelimiter(dirbase) + LSTVOL_FILE);
+			Except
+				logger('1000 : Erreur lors de la création du fichier de liste des volumes : ' + ExceptionParam, CALLER, LOG_ERROR, LogFile);
+				RaiseException(erCustomError, '1000');
+			End;
+		End;
+
+		logger('Suppression du flag de synchro en cours "' + IncludeTrailingPathDelimiter(dirbase) + FLAG_SYNC_CRIT + '"', CALLER, LOG_DEBUG, LogFile);
+		If not DeleteFile(IncludeTrailingPathDelimiter(dirbase) + FLAG_SYNC_CRIT) then
+		Begin
+			logger('1000 : Erreur lors de la suppression du flag de synchro : ' + ExceptionParam, CALLER, LOG_WARNING, LogFile);
+		End;
+
+	Except
+		Result:=False;
+		logger('Erreur dans la procédure/function "' + CALLER + '" : ' + ExceptionParam + ' - propagation vers la procédure appelante...', CALLER, LOG_WARNING, LogFile);
+
+		// Propagation de l'erreur à l'appelant
+		RaiseLastException;
+
+	Finally
+		// Si un volume est actuellement encore vérouillé (après erreur ou autre), on tente de le déverouiller
+		if VolLocked then
+		begin
+			Try
+				logger('Déverrouillage du fichier "' + oFDBFile.name +'"', CALLER, LOG_DEBUG, LogFile);
+				if not TNasDomClient(oLib.NasDomClient).fbadmin(oLib.Id,oFDBFile.name,'unlock') then
+				begin
+					RaiseException(erCustomError,'Impossible de déverrouiller le volume "' + oFDBFile.name + '" ; Erreur : ' + TNasDomClient(oLib.NasDomClient).Errcode + ':' + TNasDomClient(oLib.NasDomClient).Errmsg);
+				End;
+			Except
+			End;
+		End;
+
+		if lstVol<>Nil then lstVol.Free();
+		if oFDBFile<>Nil then oFDBFile.Free();
+	End;
+End;
+
+
+{
+	Redescente des fichiers du répertoire temporaire vers le répertoire de production
+}
+Function postsync(dirbase:string):boolean;
+Var	
+	CALLER:String;
+	i:integer;
+	SyncInit:Boolean;
+	// Mise offline par CETTE procédure
+	BibOffLine:Boolean;
+
+	// État idéjà offline avant (on ne remettra pas online...)
+	BibUnavailable:Boolean;
+
+	VolPrincSize:Int64;
+	str1,str2:String;
+	lstVol:TStringList;
+	VolInfos:TstringList;
+
+	LastVol: string;
+
+
+Begin
+
+	CALLER:='PostSync';
+
+	Result:=True;
+
+	logger('Appel de Procédure ' + CALLER + ' : Redescente des fichiers du temp vers la prod',CALLER ,LOG_INFO, LogFile);
+
+	// vérification MD5 taille NOVAXEL.FDB... (si on est appelé, le fichier ".end" doit être présent)
+	logger('Vérification de fin de procédure correcte (Taille "' + VOL_PRINC + '" correspondantes)', CALLER, LOG_INFO, LogFile);
+
+	VolPrincSize:=GetFileSize(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + + DIRDB_TEMPDIR + clPathDelim + VOL_PRINC);
+	str1:=UpperCase(trim(LitFichier(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + DIRDB_TEMPDIR + clPathDelim + FLAG_END)));
+	str2:=UpperCase(MD5ofBuffer(Int64ToStr(VolPrincSize)));
+
+	if CompareText(str1 , str2) <> 0 then
+	Begin
+		logger('612 : Attention : Fichier de terminaison érroné : ', CALLER, LOG_ERROR, LogFile);
+		logger('612 : Taille fournie : ' + str1 + ' - Taille calculée : ' + str2, CALLER, LOG_ERROR, LogFile);
+		RaiseException(erCustomError, '612');
+	End;
+
+	// Vérificatin sauvegarde engagée entre init_sync et postsync
+	if not tempo_sav(GetRsyncEnv('MODULE_PATH')) then
+	Begin
+		logger('101 : Sauvegarde en cours et attente de délai de déverrouillage des volumes dépassé', CALLER, LOG_ERROR, LogFile);
+		RaiseException(erCustomError, '101');
+	End;
+
+	// Création du fichier témoin de synchro en cours (pas d'autre action sur les volumes...
+	logger('Création du flag de synchro en cours "' + IncludeTrailingPathDelimiter(dirbase) + FLAG_SYNC_CRIT + '"', CALLER, LOG_DEBUG, LogFile);
+	If not EcritFichier('',IncludeTrailingPathDelimiter(dirbase) + FLAG_SYNC_CRIT) then
+	Begin
+		logger('1000 : Erreur lors de la création du flag de synchro : ' + ExceptionParam, CALLER, LOG_ERROR, LogFile);
+		RaiseException(erCustomError, '1000');
+	End;
+
+	Try
+		if not oNasDomAdmin.loggedOwner.logged then NASSyncConnect;
+
+	{
+		# On prend en compte chaque volume présent et on le redescend dans le parent avec les gfix qui vont bien...
+		# 2 cas de figure :
+		# - synchro initiale : on move directement les fichiers temp een prod (dépassement espace libre sur FS...)
+		# - synchro régulière : on copie les volumes de temp vers la prod, puis on déplace ces columes copiés sur les volumes de prod (annule et remplace)
+
+		# Pour ce dernier cas :
+		# Pour améliorer les perfs, on traite de la manière suivante (sur une idée de JMB ;-) ):
+		# 1) copie des volumes présents en temp ($RSYNC_MODULE_PATH/$SYNC_DEST) dans le parents (prod, ie $RSYNC_MODULE_PATH) avec "_new" en fin
+		# 2) gfix des volumes présents en prod ($RSYNC_MODULE_PATH)
+		# 3) mv des volumes "new" en prod ==> C'et là qu'on gagne un temps précieux car un mv sur le même FS est pratiquement instantané (un cp met plusieurs secondes)
+		# 4) gfix des "nouveaux" volumes (remise en prod)
+		# Les volumes présents en temp seront effacés plus tard (cf.cleansync())
+	}
+
+		lstVol:=TStringList.Create;
+
+		// Récupération de la liste des volumes en temporaires
+		lstVol:=GetVolNovaDir(IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR);
+
+		// Dernier volume présent en temporaire
+		LastVol:=GetLastVolume(IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR);
+
+		logger('Redescente des fichiers transférés du répertoire temporaire vers la prod...', CALLER, LOG_DEBUG, LogFile);
+		if lstVol=Nil then
+		Begin
+			logger('1000 : Aucun volume n''est présent dans "' + IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + '"', CALLER, LOG_ERROR, LogFile);
+			RaiseException(erCustomError, '1000');
+		End;
+
+		// Vérification de l'état des volumes reçus
+		VolInfos:=TstringList.Create();
+
+		For i:=0 to lstvol.count-1 do
+		Begin
+			logger('Test d''utilisation du volume "' + lstVol[i] + '"', CALLER, LOG_DEBUG, LogFile);
+			VolInfos:=GetVolOk(oNasDomAdmin,NASGetLib(oNasDomAdmin,LibId).FbServer_Id,lstVol[i], LogFile);
+			if VolInfos= Nil then
+			begin
+				logger('620: Le volume "' + lstVol[i] + '" ne peut pas être ouvert', CALLER, LOG_ERROR, LogFile);
+				RaiseException(erCustomError, '620');
+			End
+			Else
+				logger('Le volume "' + lstVol[i] + '" peut-être ouvert et exploité : ' +CRLF + trim(VolInfos.Text), CALLER, LOG_DEBUG, LogFile);
+		End;
+
+		oLib:=NASGetLib(oNasDomAdmin,libId);
+
+		// État de  la lib avant notre intervention
+		BibUnavailable:=oLib.unavailable;
+		logger('État offline de la lib AVANT la synchro "' + BoolToStr(BibUnavailable,BOOLSTR) + '"', CALLER, LOG_DEBUG, LogFile);
+		
+		// Mise offline inconditionnelle de la library
+		logger('Mise offline de la lib...', CALLER, LOG_DEBUG, LogFile);
+		if not oNasDomAdmin.set_lib_offline(LibId) then
+		Begin
+			logger('1000: Impossible de mettre la library ' + sLibId + ' offline - Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_ERROR, LogFile);
+			RaiseException(erCustomError, '1000');
+		End;
+		BibOffLine:=True;
+
+		SyncInit:=FileExists(IncludeTrailingPathDelimiter(dirbase) + VOL_PRINC);
+
+		For i:=0 to lstvol.count-1 do
+		Begin
+			// Mise offline du volume (s'il existe déjà en prod)
+			if FileExists(IncludeTrailingPathDelimiter(dirbase) + ExtractFileName(lstVol[i])) then
+			Begin
+				logger('Mise offline du volume "' + ExtractFileName(lstVol[i]) + '"', CALLER, LOG_DEBUG, LogFile);
+				if not oNasDomAdmin.fbadmin(LibId,ExtractFileName(lstVol[i]),'offline') then
+				Begin
+					logger('1000: La mise offline du volume "' + IncludeTrailingPathDelimiter(dirbase) + ExtractFileName(lstVol[i]) + ' a échouée - Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_ERROR, LogFile);
+					// Offline considérée comme obligatoire (à confirmer ???)
+					RaiseException(erCustomError, '1000');
+				End;
+			End;
+
+			// Déplacement en production
+			logger('Déplacement du volume "' + lstVol[i] + '" en production', CALLER, LOG_DEBUG, LogFile);
+			if not RenameFile(lstVol[i], IncludeTrailingPathDelimiter(dirbase) + ExtractFileName(lstVol[i])) then
+			Begin
+				logger('1000 : Impossible de déplacer le volume "' + lstVol[i] + '" dans "' + dirbase + '"', CALLER, LOG_ERROR, LogFile);
+				RaiseException(erCustomError, '1000');
+			End;
+{
+// Inutile maintenant, on effectue un test d'accessibilité plus haut...
+			// On remet le volume online inconditionnelement
+			logger('Déverrouillage du fichier (éventuel mais inconditionnel) "' + ExtractFileName(lstVol[i]) +'"', CALLER, LOG_DEBUG, LogFile);
+			if not oNasDomAdmin.fbadmin(libID,ExtractFileName(lstVol[i]),'unlock',InfosVol) then
+			begin
+				logger('1000 : Impossible de déverrouiller le volume "' + ExtractFileName(lstVol[i]) + '" ; Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_WARNING, LogFile);
+			End;
+}
+			// On affecte les bon propriétaires et droits au fichiers
+			// TODO portabilité Windows...
+			logger('Mise en place des propriétaires et droits pour le volume : "' + ExtractFileName(lstVol[i]) + '" en production', CALLER, LOG_DEBUG, LogFile);
+			if not ((SysRun('/bin/chown','' + DIRDB_USER + ':' + DIRDB_GROUP + ' ' + IncludeTrailingPathDelimiter(dirbase) + ExtractFileName(lstVol[i])))
+				and (SysRun('/bin/chmod',DB_PERMS + ' ' + IncludeTrailingPathDelimiter(dirbase) + ExtractFileName(lstVol[i])))) then
+				// On tente le coup de continuer sans erreur...
+				logger('1000: La modification des propriétaires et/ou droits du volume "' + IncludeTrailingPathDelimiter(dirbase) + ExtractFileName(lstVol[i]) + ' a échouée - Erreur : ' + SysRunErrorMessage.Text, CALLER, LOG_WARNING, LogFile);
+
+			logger('Mise on line (inconditionnelle, WARNING non fatal ici) du volume (au cas où il serait arrivé "shutdown") "' + ExtractFileName(lstVol[i]) + '" en production', CALLER, LOG_DEBUG, LogFile);
+			if not oNasDomAdmin.fbadmin(LibId,ExtractFileName(lstVol[i]),'online') then
+			Begin
+				logger('1000: La mise online du volume "' + IncludeTrailingPathDelimiter(dirbase) + ExtractFileName(lstVol[i]) + ' a échouée - Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_WARNING, LogFile);
+				// On ne génère pas d'erreur...
+			End;
+
+			// TODO : Passer inconditionnelement NOVAXEL/FULLTEXT et LASTVOL en RW
+
+			// Ajout 12/06/2013 : On passe tous les volumes reçus en flag RO (inconditionnelement), sauf NOVAXEL.FDB ET FULLTEXT.FDB (à voir après expérimentation) à la destination (après la copie en prod)
+			if (ExtractFileName(lstVol[i]) <> VOL_PRINC) and (ExtractFileName(lstVol[i]) <> VOL_FULLTEXT)  and (ExtractFileName(lstVol[i]) <> ExtractFileName(LastVol)) then
+			Begin
+				logger('Mise en RO du volume : "' + ExtractFileName(lstVol[i]) + '" en production', CALLER, LOG_DEBUG, LogFile);
+				if not oNasDomAdmin.fbadmin(libID,ExtractFileName(lstVol[i]),'readonly') then
+				begin
+					logger('1000 : Impossible de passer le volume "' + ExtractFileName(lstVol[i]) + '" en ReadOnly; Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_WARNING, LogFile);
+				End;
+			End
+			// MAJ inconditionnelle en RW
+			Else
+			Begin
+				logger('Mise en RW du volume : "' + ExtractFileName(lstVol[i]) + '" en production', CALLER, LOG_DEBUG, LogFile);
+				if not oNasDomAdmin.fbadmin(libID,ExtractFileName(lstVol[i]),'readwrite') then
+				begin
+					logger('1000 : Impossible de passer le volume "' + ExtractFileName(lstVol[i]) + '" en ReadWrite; Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_WARNING, LogFile);
+				End;
+			End;
+
+		End;
+			
+		// Mise online de la library
+		if not BibUnavailable then
+		Begin
+			logger('Mise online de la lib...', CALLER, LOG_DEBUG, LogFile);
+			if not oNasDomAdmin.set_lib_online(LibId) then
+			Begin
+				logger('1000: Impossible de mettre la library ' + sLibId + ' online - Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_ERROR, LogFile);
+				RaiseException(erCustomError, '1000');
+			End;
+		End
+		Else
+			logger('La bib était offline AVANT la synchro, on la laisse dans cet état...', CALLER, LOG_WARNING, LogFile);
+
+		BibOffLine:=False;
+
+		logger('Suppression du flag de synchro en cours "' + IncludeTrailingPathDelimiter(dirbase) + FLAG_SYNC_CRIT + '"', CALLER, LOG_DEBUG, LogFile);
+		If not DeleteFile(IncludeTrailingPathDelimiter(dirbase) + FLAG_SYNC_CRIT) then
+		Begin
+			logger('Erreur lors de la suppression du flag de synchro', CALLER, LOG_WARNING, LogFile);
+		End;
+
+		lstVol.clear;
+
+		// MAJ Titre
+		Try 
+			lstVol.LoadFromFile(IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + clPathDelim + TITRE_FILE);
+		Except
+			logger('Erreur lors du chargement du fichier "' + IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + clPathDelim + TITRE_FILE + '"' + ExceptionParam, CALLER, LOG_WARNING, LogFile);
+			// On sort, plus rien à faire...
+			exit;
+		End;
+
+		logger('Le fichier "' + IncludeTrailingPathDelimiter(dirbase) + DIRDB_TEMPDIR + clPathDelim + TITRE_FILE + '" est présent, on met à jour les informations de la library',CALLER ,LOG_INFO, LogFile);
+
+		if oLib = nil then
+		begin
+			logger('609 : Erreur Accès Library : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_ERROR, LogFile);
+			RaiseException(erCustomError, '609');
+		end;
+		logger('Connexion sur bib OK', CALLER, LOG_DEBUG, LogFile);
+
+		logger('MAJ du titre de la bibliothèque avec TITLE : "' + lstVol[0] +'"', CALLER, LOG_DEBUG, LogFile);
+
+		oLib.title:=lstVol[0];
+
+		// doamin V39, on ne met PAS à jour la MODIF_DATE de la lib dans ce contexte...
+		oLib.NotUpdateModifDate:=true;
+
+		if not oLib.update then
+			logger('Mise à jour des informations de la library impossible - Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_WARNING, LogFile)
+		Else
+			logger('Mise à jour du titre de la bibliothèque "' + lstVol[0] + '" réussie...', CALLER, LOG_DEBUG, LogFile);
+		
+
+	Except
+		logger('Erreur dans la procédure/function "' + CALLER + '" : ' + ExceptionParam + ' - propagation vers la procédure appelante...', CALLER, LOG_WARNING, LogFile);
+		RaiseLastException;		
+
+	Finally
+		if lstVol<>Nil then lstVol.Free();
+		if VolInfos<>Nil then VolInfos.Free();
+
+		// On essaie de remettre inconditionnelement la bib online même en cas d'erreur...
+		if (BibOffLine) and (not BibUnavailable) then
+		Begin
+			logger('Tentative de mise online de la lib même après une erreur...', CALLER, LOG_INFO, LogFile);
+			if not oNasDomAdmin.set_lib_online(LibId) then
+				logger('Impossible de mettre la library ' + sLibId + ' online - Erreur : ' + oNasDomAdmin.Errcode + ':' + oNasDomAdmin.Errmsg, CALLER, LOG_WARNING, LogFile)
+			Else
+				logger('Library ' + sLibId + ' mise online OK', CALLER, LOG_INFO, LogFile);
+
+		End;
+
+
+	End;
+End;
+
+{
+	Procédure lancée en pre-xfer du module "_info" (rép DB prod RO rsync)
+	Peut-être appelée pour :
+	- demander un fichier .env_Ok (après le dépôt d'un fichier ".ident")
+	- demander un fichier "liste.txt"
+		- Plein de travail à faire...
+	- demander un fichier ".term" (terminaison de synchro)
+	- Autres cas : appel de procédure incorrect
+
+	Toutes les sous-procédures doivent renvoyer une erreur à cette procédure afin de traiter
+	convenablement les log/email etc....
+}
+Procedure Init;
+Var
+	CALLER:String;
+	rSyncReq:String;
+	FileSyncReq:String;
+
+	SizeOrig, SizeTransfert:Int64;
+
+Begin
+
+	Try
+		CALLER:='Sync_Init';
+
+		logger('Appel de Procédure ' + CALLER + ' : Vérification des paramètres rsync',CALLER ,LOG_INFO, LogFile);
+
+		rSyncReq:=GetRsyncEnv('REQUEST');
+
+		// Quoiqu'il arrive ici, nous devons avoir un request (le client doit nous demander un fichier), sinon, mauvais appel de procédure
+		if rSyncReq='' then
+		Begin
+			// Appel non autorisé
+			outputErr('Appel de procédure incorrect !');
+			SetExitCode(1);
+			Exit;
+		End;
+
+		// Recherche du fichier de requête de synchronisation placé en desttemp par la procédure "init" générale
+		FileSyncReq:=IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + + DIRDB_TEMPDIR + clPathDelim + SYNC_FILE_REQUEST + '.' + IntToStr(LibId);
+
+		logger('Vérification de la présence du fichier de requête de synchro : "' + FileSyncReq + '"',CALLER ,LOG_DEBUG, LogFile);
+		If not FileExists(FileSyncReq) then
+		Begin
+			logger('Le fichier de requête de synchro "' + FileSyncReq + '" n''est pas présent (obligatoire pour se connecter au NAS) - Appel de procédure incorrect', CALLER ,LOG_ERROR, LogFile);
+			RaiseException(erCustomError, '9999');
+		End;
+
+		// demande de fichier liste.txt de la part du client...
+		if ExecRegExpr('.*' + LSTVOL_FILE + '.*', rSyncReq) then
+		begin
+			logger('Demande de fichier "' + LSTVOL_FILE +'"', CALLER ,LOG_INFO, LogFile);
+
+			// Vérification de la présence d'un flag de synchro déjà déposé auparavant...
+			if not FileExists(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + FLAG_SYNC) then
+			Begin
+				logger('Le fichier témoin de synchro "' + FLAG_SYNC + '" n''est pas présent - Appel de procédure incorrect...', CALLER ,LOG_ERROR, LogFile);
+				setExitCode(20);
+				exit;
+			End;
+
+			// Si un confit a été engendré lors de l'appel de "init_sync.xnov", mais que le client l'a ignoré, on rejette ici
+			logger('Vérification d''un conflit de synchro ignoré par le client',CALLER ,LOG_DEBUG, LogFile);
+			if FileExists(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) +  FLAG_CONFLIT) then
+			Begin
+				logger('Un conflit de synchro est identifié, mais le client l''a ignoré : on sort du script en erreur (sans mail)', CALLER ,LOG_ERROR, LogFile);
+				setExitCode(30);
+				Exit;
+			End;
+
+			// On regarde si une sauvegarde est en cours et on temporise le cas échéant... Si impossible, on sort sans erreur
+			if not tempo_sav(GetRsyncEnv('MODULE_PATH')) then
+			Begin
+				logger('101 : Sauvegarde en cours et attente de délai de déverrouillage des volumes dépassé', CALLER, LOG_ERROR, LogFile);
+				RaiseException(erCustomError, '101');
+			End;
+
+			VolCopy(GetRsyncEnv('MODULE_PATH'));
+
+			logger('Fin de traitement de demande de fichier "' + LSTVOL_FILE +'"', CALLER ,LOG_DEBUG, LogFile);
+			Exit;
+
+		End;
+
+		// demande de fichier de terminaison
+		if ExecRegExpr('.*' + FLAG_TERM + '.*', rSyncReq) then
+		begin
+			logger('Demande de fichier "' + FLAG_TERM + '"', CALLER ,LOG_INFO, LogFile);
+			
+			// Vérification de la présence d'un flag de synchro déjà déposé auparavant...
+			if not FileExists(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + FLAG_SYNC) then
+			Begin
+				logger('Le fichier témoin de synchro "' + FLAG_SYNC + '" n''est pas présent - Appel de procédure incorrect...', CALLER ,LOG_ERROR, LogFile);
+				setExitCode(20);
+				exit;
+			End;
+
+			// Quoiqu'il arrive plus loin, on crée le fichier de terminaison (le client doit le trouver pour nettoyer son environnement)...
+			If not EcritFichier('', IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + FLAG_TERM) then
+			Begin
+				logger('1000 : Erreur lors de la création du flag de terminaison de synchro : ' + ExceptionParam, CALLER, LOG_ERROR, LogFile);
+				RaiseException(erCustomError, '1000');
+			End;
+
+			// Enregistrement du volume des fichiers en production avant transfert
+			SizeOrig:=GetVolNovaDirSize(GetRsyncEnv('MODULE_PATH'));
+			logger('Taille origine : ' + Int64ToStr(SizeOrig),CALLER,LOG_DEBUG,LogFile);
+
+			// Enregistrement du volume transféré dans les fichiers temporaires
+			SizeTransfert:=GetVolNovaDirSize(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + DIRDB_TEMPDIR);
+			logger('Taille transférée : ' + Int64ToStr(SizeTransfert),CALLER,LOG_DEBUG,LogFile);
+
+			// TODO : stocker taille des volumes de prod AVANT redescente des temporaires...
+
+			logger('Enregistrement des fichiers de Taille dans "' + GetRsyncEnv('MODULE_PATH') + '"', CALLER ,LOG_DEBUG, LogFile);
+
+			If (not EcritFichier(int64ToStr(SizeOrig),IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + SIZE_ORIG)) or (not EcritFichier(int64ToStr(SizeTransfert),IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + SIZE_TRANSERT)) then
+			begin
+				logger('Erreur lors de l''écriture des fichiers temporaires de tailles transférées' + ExceptionParam, CALLER ,LOG_WARNING, LogFile);
+				//RaiseException(erCustomError, '1000');
+			End;
+
+			// Vérification de la présence du fichier ".end" (envoyé par le client en fin de synchro des volumes)
+			if FileExists(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + DIRDB_TEMPDIR + clPathDelim + FLAG_END) then
+			begin
+				logger('Fin de synchro correcte, appel de la procédure de redescente des volumes',CALLER,LOG_INFO,LogFile);
+
+				postsync(GetRsyncEnv('MODULE_PATH'));
+
+				// Création du fichier Falg clean pour que la procédure de nettoyage puisse se lancer en post-xfer exec...
+				if not EcritFichier('',	IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + FLAG_CLEAN) then
+				Begin
+					logger('Erreur lors de la création du fichier "' + FLAG_CLEAN + '"', CALLER, LOG_WARNING, LogFile);
+					// On ne génère pas d'erreur... (TODO : à valider car ceci empêche le nettoyage en fin de synchro...)
+				End;
+			End
+
+			// Synchro non finalisée (ie des problèmes pendant l'ensmeble de la procédure)
+			Else
+			Begin
+				logger('Fin de synchro demandée mais le fichier de fin de synchro "' + IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + DIRDB_TEMPDIR + clPathDelim + FLAG_END + '" n''est pas présent ; on laisse les fichiers temporaires en place pour une nouvelle tentative...',CALLER,LOG_ERROR,LogFile);
+				RaiseException(erCustomError, '106');
+
+			End;
+
+			if not oNasDomAdmin.loggedOwner.logged then NASSyncConnect;
+
+			// Nous considérons que la synchro est finalisée ici (les fichiers sont en prod et actifs)
+
+			// On enlève le flag de synchro sur la bib
+			logger('Retrait du flag de synchro sur la bibliothèque',CALLER ,LOG_DEBUG, LogFile);
+			oLib:=NASGetLib(oNasDomAdmin,libId);
+
+			if not SetNasTaskSync(oLib, 2) then
+				logger('1000 : Erreur lors de la mise en place du flag interne de fin sur la tâche', CALLER, LOG_WARNING, LogFile);
+
+			// Les gestions d'erreurs prennent en compte les cas de syncho avortées (mail + log négatifs)
+			if not LogSync(
+				oNasDomAdmin,
+				libId,
+				GetRsyncEnv('MODULE_PATH'),
+				true,
+				'',
+				LogFile
+			) then
+				logger('1000 : Erreur lors de l''ajout en log de synchro...', CALLER, LOG_ERROR, LogFile);
+
+
+			if not sendmailSync(
+				oNasDomAdmin,
+				libId,
+				True,
+				False,
+				'',
+				LogFile
+			) then
+				logger('1000 : Erreur lors de l''envoi des emails...', CALLER, LOG_ERROR, LogFile);
+
+
+			logger('Fin de traitement de demande de fichier "' + FLAG_TERM +'"', CALLER ,LOG_DEBUG, LogFile);
+			Exit;
+				
+		End;
+
+		// Si on est ici, aucun traitement n'a pu être lancé, on sort en erreur...
+		logger('Appel de procédure "' + CALLER +'" incorrect : ' + rSyncReq, CALLER ,LOG_ERROR, LogFile);
+		RaiseException(erCustomError, '9999');
+
+	// Gestionnaire d'erreur général
+	Except
+		{
+		Erreurs gérés :
+			Code  9999 == > email ERREUR admin seulement
+			Autre code ==> email ERREUR tous les contacts
+		Erreur non gérées (Type <> erCustomError)
+			Code  1000 == > email ERREUR tous les contacts
+		
+		Log synchro
+		}
+
+		if not oNasDomAdmin.loggedOwner.logged then NASSyncConnect;
+
+		logger('Erreur gérée globalement (envoi de mail/log/etc) ici : ' + ExceptionParam, CALLER ,LOG_ERROR, LogFile);
+		// Le path des DB n'est pas forcément connu ici (pas encore de MAJ Ini effectuée par exemple)
+		if not LogSync(
+			oNasDomAdmin,
+			libId,
+			GetRsyncEnv('MODULE_PATH'),
+			false,
+			GetErrSyncCode(ExceptionParam),
+			LogFile
+		) then
+			logger('1000 : Erreur lors de l''ajout en log de synchro...', CALLER, LOG_ERROR, LogFile);
+
+
+		if not sendmailSync(
+			oNasDomAdmin,
+			libId,
+			False,
+			ExceptionParam='99999',
+			GetErrSyncCode(ExceptionParam),
+			LogFile
+		) then
+			logger('1000 : Erreur lors de l''envoi des emails...', CALLER, LOG_ERROR, LogFile);
+
+		// On nettoie que si on n'est pas en conflit de synchro (dans le cas contraire on nettoierait un environnement EN COURS d'exploitation sur une autre synchro engagée) ou en demande de fichier ".term" sans ".end"
+		if (ExceptionParam <> '100') and (ExceptionParam <> '106') then
+		Begin
+			logger('Nettoyage des fichiers de configuration rsync...',CALLER ,LOG_DEBUG, LogFile);
+			if not NetRsyncParam(sLibId,LoginOwner, LogFile) then
+				// On ne génère pas d'erreur...
+				logger('Erreur lors du nettoyage des fichiers de configuration rsync...' + ExceptionParam , CALLER, LOG_WARNING, LogFile);
+
+			logger('Nettoyage des fichiers Flags...',CALLER ,LOG_DEBUG, LogFile);
+			//NetFlags(GetRsyncEnv('MODULE_PATH'),LogFile);
+		End;
+
+	End;
+	
+End;
+
+
+{
+	Procédure lancée en post-xfer du module "_info" (rép DB prod RO rsync)
+	Cette procédure ne doit pas renvoyer d'erreur au client, car celui-ci ne sera plus en ligne...
+}
+Procedure CleanSync;
+Var
+	CALLER:String;
+	FileSyncReq:String;
+	SyncReqItems:TStringList;
+
+Begin
+
+	Try
+		CALLER:='CleanSync';
+
+		// Si cette procédure est appelée (elle peut l'être) sans fichier ".term" (demande de terminaison du client en réussite OU en échec de synchro)
+		// On ne fait rien (elle n'est utilisable que si ce fichier est présent)
+		if not FileExists(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + FLAG_TERM) then
+		Begin
+			logger('Aucun fichier de terminaison "' + IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + FLAG_TERM + '" ; on sort sans rien faire en terme de nettoyage' ,CALLER ,LOG_INFO, LogFile);
+			exit;
+		End;
+
+		logger('Appel de Procédure ' + CALLER + ' : Vérification des paramètres rsync',CALLER ,LOG_INFO, LogFile);
+
+		// Recherche du fichier de requête de synchronisation placé en desttemp par la procédure "init" générale
+		FileSyncReq:=IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + DIRDB_TEMPDIR + clPathDelim + SYNC_FILE_REQUEST + '.' + IntToStr(LibId);
+
+		logger('Vérification de la présence du fichier de requête de synchro : "' + FileSyncReq + '"',CALLER ,LOG_DEBUG, LogFile);
+		If not FileExists(FileSyncReq) then
+		Begin
+			logger('Le fichier de requête de synchro "' + FileSyncReq + '" n''est pas présent (obligatoire pour se connecter au NAS) - Appel de procédure incorrect', CALLER ,LOG_ERROR, LogFile);
+			setExitCode(20);
+			Exit;
+		End
+		Else
+		Begin
+			SyncReqItems:=GetSyncReqItem(FileSyncReq);
+			LoginOwner:=SyncReqItems[1];
+		End;
+
+// 		// Si un confit a été engendré lors de l'appel de "init_sync.xnov", mais que le client l'a ignoré, on rejette ici
+// 		logger('Vérification d''un conflit de synchro ignoré par le client',CALLER ,LOG_DEBUG, LogFile);
+// 		if FileExists(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) +  FLAG_CONFLIT) then
+// 		Begin
+// 			logger('Un conflit de synchro est identifié, mais le client l''a ignoré : on sort du script en erreur (sans mail)', CALLER ,LOG_ERROR, LogFile);
+// 			setExitCode(30);
+// 			Exit;
+// 		End;
+
+		// Vérification de la présence d'un flag de synchro déjà déposé auparavant...
+		if not FileExists(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + FLAG_SYNC) then
+		Begin
+			logger('Le fichier témoin de synchro "' + FLAG_SYNC + '" n''est pas présent - Arrêt de la procédure...', CALLER ,LOG_ERROR, LogFile);
+			setExitCode(20);
+			exit;
+		End;
+
+		// Pour effacer les fichiers temporaires, il nous faut un fichier FLAG_CLEAN...
+		if FileExists(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + FLAG_CLEAN) then
+		begin
+			logger('Nettoyage du répertoire temporaire de synchro : "' + IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + DIRDB_TEMPDIR + '"',CALLER ,LOG_DEBUG, LogFile);
+			if not DeleteAllfileEx(IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + DIRDB_TEMPDIR,'*',true,true) then
+				logger('Erreur lors de la suppression des fichiers temporaires du répertoire "' + IncludeTrailingPathDelimiter(GetRsyncEnv('MODULE_PATH')) + DIRDB_TEMPDIR + '"' ,CALLER ,LOG_WARNING, LogFile);
+		end
+		else
+		Begin
+			logger('Flags de fin de synchro ("' + FLAG_END + '" et "' + FLAG_CLEAN + '") non présents ; les fichiers FDB temporaires ne seront PAS effacés...',CALLER ,LOG_WARNING, LogFile);
+		End;
+
+		logger('Nettoyage des flags de synchros...',CALLER ,LOG_DEBUG, LogFile);
+		NetFlags(GetRsyncEnv('MODULE_PATH'), LogFile);
+
+		logger('Nettoyage des fichiers de configuration rsync...',CALLER ,LOG_DEBUG, LogFile);
+		if not NetRsyncParam(sLibId,LoginOwner, LogFile) then
+			// On ne génère pas d'erreur...
+			logger('Erreur lors du nettoyage des fichiers de configuration rsync...' + ExceptionParam , CALLER, LOG_WARNING, LogFile);
+
+	Except
+		// On ne fait rien de particulier (pour le moment)
+		logger('Une erreur non gérée à eu lieu : ' + ExceptionParam + ' - On sort sans erreur...',CALLER ,LOG_WARNING, LogFile);
+
+	Finally
+		logger('Fin d''appel de Procédure ' + CALLER ,CALLER ,LOG_INFO, LogFile);
+
+	End;
+
+
+End;
+
+
+{
+	Fonction de log pour chaque dépôt de fichier dans le module d'écriture
+	Sauf au premier appel (dépôt du fichier ident), où l'on s'assurera que le répertoire de destination existe bien
+}
+Procedure prelogsync();
+Var
+	CALLER:String;
+
+Begin
+	CALLER:='Sync_PrelogSync';
+	// Quoiqu'il arrive ici, nous devons avoir un request (le client doit nous demander un fichier), sinon, mauvais appel de procédure
+	if GetRsyncEnv('REQUEST')='' then
+	Begin
+		// Appel non autorisé
+		logger('Appel de procédure incorrect !', CALLER,LOG_DEBUG,LogFile);
+		SetExitCode(1);
+		Exit;
+	End;
+
+	// La demande concerne le fichier flag d'identification (première action entreprise par la procédure de synchro)
+	if ExecRegExpr('.*' + FLAG_IDENT + '.*', GetRsyncEnv('REQUEST')) then
+	Begin
+		logger('==================================================================================================================================================', CALLER,LOG_INFO,LogFile);
+		logger('                                                          NOUVELLE SYNCHRONISATION', CALLER,LOG_INFO,LogFile);
+		logger('==================================================================================================================================================', CALLER,LOG_INFO,LogFile);
+
+	End;
+
+	// Pour tous les fichiers déposés ici, on log...
+	logger('Début de dépôt de fichier : "' + GetRsyncEnv('REQUEST') +'" dans "' + GetRsyncEnv('MODULE_PATH') + '" pour "' + GetRsyncEnv('MODULE_NAME') + '"', CALLER,LOG_DEBUG,LogFile);
+End;
+
+{
+# Fonction de log pour chaque dépôt de fichier dans le module d'écriture
+function postlogsync() {
+	# Rappel : RSYNC_REQUEST n'est pas disponible sur le post-xfer de rsync...
+	logger "Le dernier dépôt de fichier dans $RSYNC_MODULE_PATH pour $RSYNC_MODULE_NAME s'est terminé avec l'état $RSYNC_EXIT_STATUS" $LOG_FILE
+}
+
+
+// Programme principal qui prend en charge les appels globaux et lance les Procédures associées à chaque action possible...
+Begin
+
+	{
+	Comment est-on appelé et quoi faire ?
+
+	Si paramètre "init" présent : Module "_info" (rép DB prod RO rsync) en pre-xfer
+	Si paramètre "clean" présent : Module "_info" (rép DB prod RO rsync) en post-xfer
+	Si paramètre "prelogsync" présent : Module base (Rép Dépôt BD en WO rsync) en pre-xfer
+
+	Le module rsync est forcémment un module de synchro de Bibliothèque (par contre, ce peut-être un module de base ou "_info")
+	}
+
+	// Appel hors rsync, on rejette
+	if GetRsyncEnv('PID')='' then
+	Begin
+		outputErr('Ce script ne peut-être utilisé que dans un contexte d''appel par le daemon rsync !');
+		SetExitCode(1);
+		Exit;
+	End;
+
+	sLibId:=ReplaceRegExpr('(.*)' + RSYNCD_MOD_INFO,GetRsyncEnv('MODULE_NAME'),'${1}',true);
+	Libid:=StrToInt(sLibId);
+
+
+	// Fichier de log basé sur chemin par défaut + libId paddé sur 10 (nom de section) sans le suffice "_info" éventuel...
+	//LogFile:= NAS_LOGSYNC_PATH + sLibId + '.log';
+	LogFile:=StrReplace(NAS_LOGSYNC_PATH,'#id#',slibID)
+
+	CALLER:='Sync_Global';
+
+	logger('Appel de script de synchro avec le paramètre "' + paramstr(2) + '" - le module "' + GetRsyncEnv('MODULE_NAME') +'" et le path "' + GetRsyncEnv('MODULE_PATH') + '"',CALLER ,LOG_DEBUG, LogFile);
+
+	oNasDomAdmin:=TNasDomClient.Create();
+
+	if not NASConnect(oNasDomAdmin, GetNASHost('')) then
+	begin
+		logger('1000 : impossible de se connecter au serveur NAS sur l''URL "' + GetNASHost('') + '"', CALLER ,LOG_ERROR, LogFile);
+		RaiseException(erCustomError, '1000');
+	End;
+
+	// TODO : comparaison version NAS min et en cours...
+
+	VOL_PRINC:=oNasDomAdmin.GEDFilename;
+	if trim(VOL_PRINC) = '' then
+	Begin
+		logger('1000 : Impossible d''initialiser la valeur de VOL_PRINC', CALLER ,LOG_ERROR, LogFile);
+		RaiseException(erCustomError, '1000');
+	End
+	else
+		logger('Récupération des paramètres du NAS ; VOL_PRINC : "' + VOL_PRINC + '"',CALLER ,LOG_DEBUG, LogFile);
+
+	{
+		Gestionnaire d'erreur global
+		Si une erreur est générée volontairement (erCustomError) par une des procédures appelées on traite
+		Sinon on sort en erreur
+	}
+	Try
+		Case paramstr(2) of
+			'init':Init;
+			'clean':cleansync;
+			'prelogsync':prelogsync;
+			Else
+			Begin
+				// Appel non autorisé
+				logger('Appel de script  incorrect !', CALLER ,LOG_ERROR, LogFile);
+				RaiseException(erInterfaceNotSupported, 'paramètre non reconnu (' + paramstr(2) + ') lors de l''appel de la procédure générale');
+			End
+		End;
+
+	Except
+		// Gestionnaire d'erreur global : Si une exception est générée par nous même (et non traitée auparavant), on traite, sinon on renvoie et on sort...
+		if ExceptionType = erCustomError then
+		Begin
+			logger('Erreur traitée (ie. message(s) plus haut) : ' + ExceptionParam, CALLER, LOG_INFO, LogFile);
+			// On sort sans erreur rsync
+			SetExitCode(0);
+		End
+		Else
+		Begin
+			logger('1000 : Erreur non traitée : ' + ExceptionParam, CALLER, LOG_ERROR, LogFile);
+			//On sort avec erreur rsync
+			SetExitCode(1000);
+		End;
+
+	Finally
+		Try
+		// Libération des ressources partagées
+			if oNasDomAdmin <> nil then
+			Begin
+				if oNasDomAdmin.loggedOwner.logged then oNasDomAdmin.domainLogout;
+				oNasDomAdmin.Close;
+				oNasDomAdmin.free;
+			End;
+
+			// Libération des ressources partagées
+			FreeRsyncRes;
+		Except
+			logger('1000 : Erreur lors de la libération des ressources internes...', CALLER, LOG_WARNING, LogFile);
+		End;
+
+
+	End;
+
+End.

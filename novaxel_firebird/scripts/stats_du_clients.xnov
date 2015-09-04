@@ -1,0 +1,120 @@
+{
+	Création V1
+
+	Création d'un fichier stats de l'utilisation dique par les clients
+
+V2 (15/06/2014)
+	- ajout ajout de tlibrary.size_mb_org en sortie (dernière position)
+
+
+TODO :
+}
+
+Program NAS_STATS_DU_CLIENT;
+{$I func_nas.xnov}
+{$I local_auth.xnov}
+
+
+var
+	ErrMsg:String;
+	ONasDomClient:TNasDomClient;
+	i:Integer;
+	oLibs:TLibraries;
+	OOwner:TOwner;
+	OLogSyncs:TLogSyncs;
+	LastSync:String;
+	sizeGB:extended;
+	sizeGBOrg:extended;
+
+Function GetLogsSync(oNasDomClient:TNasDomClient;owner_id, lib_id:Integer;FromTime,ToTime:TDateTime):TLogSyncs;
+begin
+ 	Result:=TLogSyncs.create(oNasDomClient);
+ 	Result.Load(owner_id, lib_id,FromTime,ToTime,32767,True);
+end;
+
+Begin
+
+	oNAsDomClient:=TNasDomClient.Create();
+
+	try  
+		if not NASConnect(oNasDomClient, GetNASHost('')) then
+		Begin
+			ErrMsg:='"Le serveur NAS n''est pas joignable !"';
+			exit;
+		End;
+
+		if not NASLogin(oNasDomClient, AdmNASLogin,AdmNASHashedPasswd, True) then 
+		Begin
+			ErrMsg:='"Impossible de se connecter au serveur NAS !"';
+			exit;
+		End;
+
+		// Chargement des bibliothèques (on prend tout en compte sauf les supprimées)
+		ONasDomClient.libraries.AllStates:='&1';
+
+		ONasDomClient.libraries.load(True);
+		OLibs:=ONasDomClient.libraries;
+		ONasDomClient.owners.AllStates:='&1';
+
+		Deletefile(NAS_STATS_DU_CLIENT);
+		
+		for i:=0 to OLibs.count do
+		Begin
+			// Recherche des informations du owner
+			OOwner:=NASGetOwner(oNasDomClient,OLibs[i].owner_id);
+			if OOwner = Nil then 
+			Begin
+				OutPutErr('Owner ' + Int64ToStr(OLibs[i].owner_id) + ' non trouvé: ' + Int64ToStr(OLibs[i].owner_id));
+				Continue;
+			End;
+
+			// Recherche des informations LogSync
+			OLogSyncs:=GetLogsSync(oNasDomClient,OLibs[i].owner_id,oLibs[i].id,0,0);
+			if OLogSyncs.count > 0 then
+				LastSync:=DateTimeToNAS(OLogSyncs[0].time_end)
+			Else
+				LastSync:='';
+
+			sizeGB:=extended(OLibs[i].Size_mb)/1024;
+			sizeGBOrg:=extended(OLibs[i].Size_mb_org)/1024;
+
+			//OutPutErr('Traitement de la lib ' + Int64ToStr(OLibs[i].id) + ' (' + OLibs[i].comment + ') : external_id : ' + OOwner.external_id + ' - Taille : ' + Int64ToStr(OLibs[i].Size_mb) + ' (' + FloatToStr(sizeGB) + ')');
+
+			
+			if trim(OOwner.external_id) <> '' then
+				AppendFichier(
+						OOwner.external_id + ';'
+						+ iif(trim(OLibs[i].GUID)='',OLibs[i].title, OLibs[i].GUID)  + ';' 
+						+ Format('%1.3f',[sizeGB]) + ';'
+						+ BoolToStr(OLibs[i].Chargeable,BOOLNUM) + ';'
+						+ LastSync + ';'
+						+ Format('%1.3f',[sizeGBOrg])
+						+ CR + LF,
+						NAS_STATS_DU_CLIENT
+				);
+
+		End;
+		
+
+	Except
+	Finally
+		if ErrMsg<>'' then
+		Begin
+			OutPutErr(ErrMsg);
+			SetExitCode(1);
+		End;
+		Try
+			FreeNASRes();
+			OLibs.Free();
+			OLogSyncs.free();
+			OOwner.Free();
+			if oNasDomClient<>Nil then
+			Begin
+				oNasDomClient.domainLogout
+				oNasDomClient.Close;
+				oNasDomClient.Free;
+			End;
+		Except
+		End;
+	End;
+End.

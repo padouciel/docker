@@ -1,0 +1,499 @@
+// TODO : mettre à false pour prod
+{$DEFINE DEBUG}
+
+{
+	Création V1
+
+	Envoi d'un email d'alerte pour les synchros non effectuées depuis un laps de temps donné...
+	- envoi au client de type 'PRO'
+	- seulement pour les bibs facturable
+
+TODO : 
+}
+
+
+Program alert_sync;
+{$I func_nas.xnov}
+{$I local_auth.xnov}
+
+
+var
+	stDummy:string;
+
+	ONasDomClient:TNasDomClient;
+
+	StateNoSync:Integer;
+	StateDeleted:Integer;
+
+	ErrMsg:String;
+	i,j, x,y:Integer;
+	LastSync:TLogSync;
+	DateDerSync:TDateTime;
+
+	Libs:TLibraries;
+	Owners:TOwners;
+
+	LstDest:TStringList;
+
+	OLogSyncs:TLogSyncs;
+
+	ParserDelim:String;
+	AdminAddress:String;
+
+
+Procedure Log(Msg:String);
+Begin
+	{$IFDEF DEBUG}
+		outputErr(Msg);
+	{$ENDIF}
+End;
+
+{
+	Ceci n'est appelé que si au moins un contact est destinataire et que la lib est en délai de synchro dépassé...
+	LstDest contient une login + l'objet Ocontact correspondant...
+}
+Function sendmailAlertSync(oLib:TLibrary; DateDerSync:TDateTime;LstDest:TStringList):boolean;
+Var
+	//CALLER:String;
+	LstVar:TStringList;
+
+	ValParam:String;
+
+
+	BodyTemp, Body, subject:String;
+	ValBlb:TStringStream;
+	ErrSendMail:Tstrings;
+	Dest:TStringList;
+
+	i,j, dummy: Integer;
+
+	OContact:Tcontact;
+
+	OOWner:TOwner;
+
+Begin
+	//CALLER:='sendmailSync';
+
+	Result:=False;
+
+	Try
+
+		// On récupère les variables identifiées
+		Log('Récupération des variables nécessaires au traitement des mails');
+
+		LstVar:=TStringList.Create();
+
+		LstVar.add('admin_email' + '=' + AdminAddress);
+
+		LstVar.add('domain_name' + '=' + trim(oNasDomClient.DomainName));
+		LstVar.add('domain_ServerType' + '=' + trim(oNasDomClient.ServerType));
+		LstVar.add('domain_ServerVersion' + '=' + trim(oNasDomClient.ServerVersion));
+		LstVar.add('domain_DomainVersion' + '=' + trim(oNasDomClient.DomainVersion));
+		LstVar.add('domain_DomainVersion' + '=' + trim(oNasDomClient.DomainVersion));
+		LstVar.add('domain_Encrypted' + '=' + BoolToStr(oNasDomClient.Encrypted,BOOLSTR));
+
+		// Infos Lib
+		LstVar.add('lib_title' + '=' + trim(oLib.Title));
+		LstVar.add('lib_id' + '=' + Int64ToStr(oLib.id));
+		LstVar.add('sync_date' + '=' + FormatDateTime('dd/mm/yyyy hh:mm',DateDerSync));
+		LstVar.add('nb_days' + '=' + Int64ToStr(DaysBetween(DateDerSync,now)));
+
+		OOWner:=NASGetOwner(oNasDomClient,oLib.Owner_id);
+		LstVar.add('owner_id_externe' + '=' + OOwner.external_id);
+		LstVar.add('owner_domain' + '=' + OOwner.subdomain);
+
+		// Signature à créer en dernier car elle peut contenir des variables elle-même
+		ValBlb:=TStringStream.Create('');
+		if NASGetDomParamValues(oNasDomClient, 'DOMAIN','ADMIN_EMAIL_SIG',ValParam,ValBlb) then
+		begin
+// 			Log('Signature Admin: ' + ValBlb.Datastring);
+			LstVar.add('signature' + '=' + ParseText(trim(ValBlb.Datastring),ParserDelim,LstVar,False));
+		End
+		Else
+		Begin
+			Log('Impossible de récupérer la valeur du paramètre Signature Admin: ' + oNasDomClient.Errcode + ' : ' + oNasDomClient.Errmsg);
+			setexitCode(1);
+			Exit;
+		End;
+
+		ValBlb:=TStringStream.Create('');
+
+		if Not NASGetDomParamValues(oNasDomClient, 'SYNCHRO','EMAIL_ALERT',ValParam,ValBlb) then
+		Begin
+			Log('Impossible de récupérer la valeur du paramètre de message email: ' + oNasDomClient.Errcode + ' : ' + oNasDomClient.Errmsg);
+			Exit;
+		End;
+
+		subject:=ValParam;
+		BodyTemp:=trim(ValBlb.Datastring);
+
+		if (BodyTemp = '') or (subject='')  then
+		Begin
+			Log('Subject et/ou Body est vide');
+		End
+		else
+		Begin
+			ErrSendMail:=TStringList.Create();
+
+			subject:=ParseText(subject,ParserDelim,LstVar,False);
+
+			Dest:=TStringList.Create();
+
+			// Envoi d'un mail par contact...
+			for i:=0 to LstDest.count -1 do
+			Begin
+
+				Dest.Clear();
+
+				dummy:=LstVar.indexOfName('contact_prefix');
+				if dummy <>-1 then
+				begin
+// 					Log('Effacement de  ' + 'contact_prefix');
+					LstVar.delete(dummy);
+				end;
+				dummy:=LstVar.indexOfName('contact_firstname');
+				if dummy <>-1 then
+				begin
+// 					Log('Effacement de  ' + 'contact_firstname');
+					LstVar.delete(dummy);
+				end;
+				dummy:=LstVar.indexOfName('contact_name');
+				if dummy <>-1 then
+				begin
+// 					Log('Effacement de  ' + 'contact_name');
+					LstVar.delete(dummy);
+				end;
+
+
+				oContact:=TContact(LstDest.Objects[i]);
+
+				LstVar.add('contact_prefix' + '=' + trim(oContact.Prefix));
+				LstVar.add('contact_firstname' + '=' + trim(oContact.FirstName));
+				LstVar.add('contact_name' + '=' + trim(oContact.Name));
+
+				Dest.add(trim(oContact.email));
+
+				// Admin toujours en copie
+				Dest.add(AdminAddress);
+
+				// Ajout des contacts technique Admin
+				oNasDomClient.loggedOwner.contacts.load(True);
+				for j:=0 to oNasDomClient.loggedOwner.Contacts.count-1 do
+				Begin
+					// TODO : vérifier cette règle de gestion...
+					if (oNasDomClient.loggedOwner.Contacts[j].email<>'') and (oNasDomClient.loggedOwner.Contacts[j].ContTypes.Find('Technique')<>nil) then
+					Begin
+// 						Log('Ajout de "' +  oNasDomClient.loggedOwner.Contacts[j].email + '" en liste des destinataires admin');
+						Dest.add(oNasDomClient.loggedOwner.Contacts[j].email);
+
+// 					End
+// 					Else
+// 					Begin
+// // 						Log('Le contact Admin N° ' + Int64ToStr(oNasDomClient.loggedOwner.Contacts[j].Id) + ' à l''adresse  "' + oNasDomClient.loggedOwner.Contacts[i].EMail + '" n''est pas concerné par ce mail');
+					End;
+				End;
+
+
+				Body:=ParseText(BodyTemp,ParserDelim,LstVar,False);
+
+				Log('Envoi d''email' + CRLF + Body);
+
+				if not SendMail(
+					subject, // Obj
+					Dest, // dest
+					Body, // body
+					Nil,
+					AdminAddress, // From
+					ErrSendMail
+					) then
+				Begin
+					Log('Erreur Envoi de mail : ' + ErrSendMail.Text);
+// 				End
+// 				Else
+// 				Begin
+// 					Log('Message envoyé');
+				End;
+				Log('Fin Envoi d''email');
+
+			End;
+		End;
+
+		Result:=True;
+
+	Except
+		Log('Erreur Envoi d''email');
+		
+					
+	Finally
+		Try
+			if LstVar<>nil then LstVar.Free();
+			if ValBlb <> nil then ValBlb.Free();
+			if ErrSendMail <> nil then ErrSendMail.Free();
+			if Dest<>Nil then Dest.Free();
+			if Oowner<>Nil then Oowner.Free();
+			if oContact<>Nil then oContact.Free();
+		Except
+			Log('Erreur Libération res email');
+		End;
+
+	End;
+End;
+
+
+Begin
+
+	oNAsDomClient:=TNasDomClient.Create();
+
+	try
+		Log(GetNASHost(''));
+		if not NASConnect(oNasDomClient, GetNASHost('')) then
+		Begin
+			ErrMsg:='"Le serveur NAS n''est pas joignable !"';
+			exit;
+		End;
+
+		if not NASLogin(oNasDomClient, AdmNASLogin,AdmNASHashedPasswd, True) then 
+		Begin
+			ErrMsg:='"Impossible de se connecter au serveur NAS !"';
+			exit;
+		End;
+
+		if not NASGetDomParamValues(oNasDomClient, 'SYNCHRO','NO_SYNC',stDummy,Nil) then
+		Begin
+			ErrMsg:='"Impossible de récupérer la valeur de l''état NO_SYNC !"';
+			exit;
+		End;
+		StateNoSync:=StrToInt(stDummy);
+
+		if not NASGetDomParamValues(oNasDomClient, 'DOMAIN','RECORD_DELETED',stDummy,Nil) then
+		Begin
+			ErrMsg:='"Impossible de récupérer la valeur de l''état supprimé !"';
+			exit;
+		End;
+		StateDeleted:=StrToInt(stDummy);
+
+		NASGetDomParamValues(oNasDomClient, 'DOMAIN','MACRO_DELIM',ParserDelim,Nil);
+		ParserDelim:=trim(ParserDelim);
+
+		if ParserDelim='' then
+		begin
+			Log('Impossible de récupérer la valeur du délimiteur de Macro en TDOMPARAM : ' + oNasDomClient.Errcode + ' : ' + oNasDomClient.Errmsg);
+			Exit;
+		end;
+// 		Else
+// 			Log('Delim MAcro : "' + ParserDelim + '"');
+
+		// Adresse email Admin, recherchée dans le contact principal
+		AdminAddress:=oNasDomClient.loggedOwner.contact.email;
+		// Si non trouvée, on essaie de récupérer l'adresse générale
+		if AdminAddress='' then 
+		Begin
+			Log('Adresse contact admin vide, on essaie avec le paramètre général: "' + oNasDomClient.DomainAdminEmail + '"');
+			AdminAddress:=oNasDomClient.DomainAdminEmail;
+		End;
+		
+		Log('Adresse admin finale : "' + AdminAddress + '"');
+
+
+		// On charge les owners non supprimés
+		ONasDomClient.owners.AllStates:='&' + Int64ToStr(StateDeleted);
+		ONasDomClient.owners.load(true);
+		Owners:=ONasDomClient.owners;
+
+		for i:=0 to Owners.count-1 do
+		Begin
+
+			Log('Traitement owner : ' + Int64ToStr(Owners[i].id) + ' : ' + Owners[i].name);
+
+//Plus de limitations ici
+{
+			// Si non PRO, on continue
+			if trim(Owners[i].Param['LICENCE', 'TYPE']) <> 'PRO' then
+			Begin
+				Log('ONwner non PRO : traitement suivant');
+				continue;
+			End;
+}
+
+			// On récupère la liste des bibs du owners
+			Owners[i].libraries.Librarystate:='&' + Int64ToStr(StateDeleted + StateNoSync);
+			Owners[i].libraries.load(True);
+			Libs:=Owners[i].libraries;
+			
+			Log('Nb libs : ' + Int64ToStr(Libs.count));
+
+			// Parcours des libs 
+			for j:=0 to Libs.count-1 do
+			Begin
+
+				Log('	Traitement Lib : ' + Int64ToStr(Libs[j].id) + ' : ' + Libs[j].title);
+
+				LstDest:=TStringList.Create();
+
+//Plus de limitations ici
+{
+				// Lib facturable
+				if not Libs[j].Chargeable then
+				Begin
+					Log('		Non facturable...');
+					continue;
+				End;
+}
+				// Contact avec syncmail attaché ?
+				Libs[j].contacts.load(True);
+
+				if Libs[j].contacts.count=0 then
+				Begin
+					Log('		Aucun contact en suivi pour cette Lib');
+					continue;
+				End;
+
+				// Récupération de la dernière synchro de la lib en cours...
+				LastSync:=Libs[j].LastLogSync;
+
+				// Init Date dernière synchro...
+				if LastSync=nil then 
+				begin
+					Log('		Jamais synchro, on prend la date de création de la lib...');
+					DateDerSync:=Libs[j].create_date
+				End
+				else
+				Begin
+					if LastSync.syncstate then
+					Begin
+						// Dernière synchro OK, on prend en référence...
+						Log('		Dernière synchro OK pour cette Lib');
+						DateDerSync:=LastSync.time_end
+					End
+					Else
+					// Si la dernière synchro n'est pas Ok, on est obligé d'aller chercher la dernière OK :-(
+					Begin
+						// Récup des synchro
+						Log('		Dernière synchro KO pour cette Lib, on va chercher la dernière OK...');
+						OLogSyncs:=TLogSyncs.create(ONasDomClient);
+						if not OLogSyncs.Load(0, Libs[j].id,0,0,1,True) then
+						Begin
+							Log('Impossible de récupérer la liste des synchros pour la lib ' +Int64ToStr(Libs[j].id));
+							// On passe à la lib suivante
+							continue;
+						End;
+						// Aucune synchro Ok trouvée, on init à la date de Création
+						if OLogSyncs.count=0 then
+						Begin
+							Log('		Jamais eu de synchro OK pour cette Lib, on prend la date de création de la lib...');
+							DateDerSync:=Libs[j].create_date;
+						End
+						else
+						Begin
+							Log('		Prise en compte de la dernière synchro OK pour cette lib...');
+							// On prend la dernière trouvée (liste sort by time_end par défaut)
+							DateDerSync:=OLogSyncs[OLogSyncs.count-1].time_end;
+						End;
+					End;
+				End;
+
+					
+
+				// Dernière synchro dans les délais, pas la peine de traiter plus loin
+				if HoursBetween(DateDerSync,now)<=24 then
+				Begin
+					Log('		Dernière synchro il y a moins de 24 H...');
+					continue;
+				End;
+
+
+				for x:=0 to Libs[j].contacts.count-1  do
+				begin
+					if (Libs[j].contacts[x].ContTypes.count=0) or (Libs[j].contacts[x].EMail='') then
+					Begin
+						Log('		contact ' + Libs[j].contacts[x].name + ' non désigné en suivi ou sans email');
+						continue;
+					End;
+
+					for y:=0 to Libs[j].contacts[x].ContTypes.count-1 do
+					begin 
+
+						// Pas désigné pour un suivi de synchro...
+						if Libs[j].contacts[x].ContTypes[y].SyncSendmail=0 then continue;
+
+						Log('			contact ' + Libs[j].contacts[x].name + ' désigné en suivi :' + Int64ToStr(Libs[j].contacts[x].ContTypes[y].SyncSendmail));
+
+						// 24 heures en premier
+						if (GetStateCompare(Libs[j].contacts[x].ContTypes[y].SyncSendmail,'~',clSync_sendmail_nosync_day)) and (HoursBetween(DateDerSync,now)>24) then
+						Begin
+							Log('				contact ' + Int64ToStr(Libs[j].contacts[x].id) + ' - ' +  Libs[j].contacts[x].name + ' désigné en alerte journalier : envoi de mail');
+							LstDest.addObject(Int64ToStr(Libs[j].contacts[x].id), Libs[j].contacts[x]);
+						End
+						Else
+						Begin
+							if (GetStateCompare(Libs[j].contacts[x].ContTypes[y].SyncSendmail,'~',clSync_sendmail_nosync_3days)) and (HoursBetween(DateDerSync,now)>(24*3)) then
+							Begin
+								Log('				contact ' + Int64ToStr(Libs[j].contacts[x].id) + ' - ' + ' désigné en alerte 3 jours : envoi de mail');
+								LstDest.addObject(Int64ToStr(Libs[j].contacts[x].id), Libs[j].contacts[x]);
+							End
+							Else
+							Begin
+								if (GetStateCompare(Libs[j].contacts[x].ContTypes[y].SyncSendmail,'~',clSync_sendmail_nosync_week)) and (HoursBetween(DateDerSync,now)>(24*7)) then
+								Begin
+									Log('				contact ' + Int64ToStr(Libs[j].contacts[x].id) + ' - ' + ' désigné en alerte hebdo : envoi de mail');
+									LstDest.addObject(Int64ToStr(Libs[j].contacts[x].id), Libs[j].contacts[x]);
+								End
+								Else
+								Begin
+									if (GetStateCompare(Libs[j].contacts[x].ContTypes[y].SyncSendmail,'~',clSync_sendmail_nosync_month)) and (MonthsBetween(DateDerSync,now)>=1) then
+									Begin
+										Log('				contact ' + Int64ToStr(Libs[j].contacts[x].id) + ' - ' +   ' désigné en alerte mensuel : envoi de mail');
+										LstDest.addObject(Int64ToStr(Libs[j].contacts[x].id), Libs[j].contacts[x]);
+									End
+									Else
+										Log('				contact '+ Int64ToStr(Libs[j].contacts[x].id) + ' - '  + ' non désigné en alerte : pas d''envoi de mail');
+								End;
+							End;
+						End;
+					End;
+				End;
+
+				// S'il y a au moins un contact on envoie le mail
+				if LstDest.count >0 then
+				Begin
+					if not sendmailAlertSync(Libs[j], DateDerSync,LstDest) then
+					Begin
+						log('Envoi de mail KO')
+						// NEttoyage des objets de la liste
+						for y:=0 to LstDest.count-1 do
+							LstDest.Objects[y].Free();
+					End
+					Else
+						log('Envoi de mail OK');
+				End;
+
+
+				LstDest.Clear();
+
+			End;
+		End;
+
+	Except
+		log('Erreur dans le traitment principal' + ExceptionParam);
+
+	Finally
+		if ErrMsg<>'' then
+		Begin
+			Log(ErrMsg);
+			SetExitCode(1);
+		End;
+
+		Try
+			FreeNASRes();
+			if OLogSyncs<>nil then OLogSyncs.Free();
+			if Libs<>nil then Libs.Free();
+			if Owners<>nil then Owners.Free();
+			if LastSync<>nil then LastSync.Free();
+			if oNAsDomClient<>nil then oNAsDomClient.Free();
+			if LstDest<>Nil then LstDest.Free();
+		Except
+
+		End;
+	End;
+
+End.

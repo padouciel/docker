@@ -1,0 +1,175 @@
+{
+	Renvoie une liste d'info OWNER Domaine sous forme CSV
+
+	Le principe est d'avoir grosso-modo les mêmes informations que celles visibles sur l'écran d'accueil de l'Admin Cloud, ie
+	- ID
+	- Domaine
+	- Nom Client
+	- Type
+	- Tailles (init + facturable)
+	- Date Création
+	- Date Modification
+	- Autres ?
+
+}
+program test;
+
+{$I func_cloud.xnov}
+
+Const
+	CALLER='get_cloud_clients_infos';
+
+var
+    SCParams : TScriptParams;
+	SCResults: TScriptResult;
+    i, x :Integer;
+    fileresult:String;
+	oNasDomClient:TNasDomClient;
+	oOwnerSort:TOwners;
+
+	// Si demandé en paramètre
+	TypeOwner:String;
+	TOCur: String;
+
+	sizeGB:extended;
+	sizeGBCharg:extended;
+
+Begin
+	SCParams:=TScriptParams.Create();
+	SCResults:=TScriptResult.Create();
+
+	SetExitCode(1);
+
+	if SCParams.paramsFilename='' then
+	Begin
+		OutputErr('Script appelé hors contexte NAS exec_script');
+		exit;
+	End;
+
+	Try
+
+		oNasDomClient:=TNasDomClient.Create();
+
+		if not NASConnect(oNasDomClient, GetNASHost('')) then
+		Begin
+			SCResults.errmsg:='Impossible de joindre le serveur NAS  ; merci de contacter votre service technique';
+			Exit;
+		End;
+
+		if not NASLogin(oNasDomClient, SCParams.OwnerLogin,SCParams.OwnerPasswd, False) then 
+		Begin
+			SCResults.errmsg:='Impossible de se connecter au serveur NAS ; merci de contacter votre service technique';
+			exit;
+		End;
+
+		logger_NAS(oNasDomClient,'===============================================================================', CALLER, LOG_INFO);
+		logger_NAS(oNasDomClient,'Lancement de "' + CALLER + '"', CALLER, LOG_INFO);
+
+		// Type owner passé en paramètre
+		if SCParams.ParamsList.IndexOfName('type')=-1 then // Non passé => Tous
+			TypeOwner:='-1'
+		Else
+		Begin
+			// En 2 temps car UpperCase semble "mouliner" si inclus ???
+			TypeOwner:=Trim(SCParams.getValue('type'));
+			TypeOwner:=UpperCase(TypeOwner);
+		End;
+
+		if TypeOwner<>'' then 
+			logger_NAS(oNasDomClient,'Type de owner demandé : ' + TypeOwner, CALLER, LOG_INFO);
+
+		fileresult:=extractfilepath(SCParams.paramsFilename)+'infos_owners.csv';
+
+		Deletefile(fileresult);
+
+		AppendFichier(utf8BOM, fileresult);
+		AppendFichierUTF8(
+			'Domaine;Nom;Type;Taille GED Totale (Go);Taille Facturable (Go);Date Création;Date MAJ;ID Cloud;ID external' + CRLF, fileresult);
+
+
+		// On charge les Owners visibles par défaut
+		// ONasDomClient.owners.AllStates:='&1';
+		oOwnerSort:=TOwners.create(oNasDomClient, nil);
+		oOwnerSort.SortCriterias.Clear;
+		oOwnerSort.SortCriterias.Add(SORT_OWNER_SUBDOMAIN, true);
+		if not oOwnerSort.load(true) then
+		Begin
+			SCResults.errmsg:='Impossible d''obtenir la liste des propriétaires';
+			exit;
+		End;
+		oOwnerSort.Sort;
+
+// 		oNasDomClient.Owners.load(true);
+
+		logger_NAS(oNasDomClient,'C''est parti avec ' + int64ToStr(oOwnerSort.count) + ' owners', CALLER, LOG_INFO);
+
+		for i:=0 to oOwnerSort.count-1 do
+		Begin
+			// On ne prend pas en compte les comptes admin & Co
+			if (oOwnerSort[i].id <= 0) then continue;
+
+			TOCur:=Uppercase(oOwnerSort[i].Param['LICENCE','TYPE']);
+
+			if (TypeOwner<>'-1') and (Pos(TypeOwner,TOCur)<1) and (TypeOwner<>TOCur) then continue;
+
+			sizeGB:=extended(oOwnerSort[i].SizeMb)/1024;
+			sizeGBCharg:=extended(oOwnerSort[i].SizeMbChargeable)/1024;
+
+
+			AppendFichierUTF8(
+				oOwnerSort[i].subdomain + ';' +
+				oOwnerSort[i].name + ';' +
+				TOCur + ';' +
+				// Pas de gestion correcte des locales ;-(
+				StrReplace(Format('%1.3f',[sizeGB]),'.',',') + ';' + // + ';' + //int64ToStr(oOwnerSort[i].SizeMb) + ';' +
+				StrReplace(Format('%1.3f',[sizeGBCharg]),'.',',') + ';' +
+				FormatDateTime('dd/mm/yyyy',oOwnerSort[i].create_date) + ';' +
+				FormatDateTime('dd/mm/yyyy',oOwnerSort[i].modif_date) + ';' +
+				int64ToStr(oOwnerSort[i].id) + ';' +
+				oOwnerSort[i].external_id  + CRLF,
+			fileresult);
+
+			x:=x+1;
+
+		End;
+
+	Except
+		logger_NAS(oNasDomClient,'Erreur fatale ' + ExceptionParam, CALLER, LOG_INFO);
+		SCResults.errmsg:='Erreur fatale lors de l''exécution du script : ' + ExceptionParam;
+	
+	Finally
+		SCResults.mimetype:='text/plain';
+		if SCResults.errmsg<>'' then
+		Begin
+
+			logger_NAS(oNasDomClient,'Erreur lors du traitement : ' + SCResults.errmsg, CALLER, LOG_INFO);
+			SetExitCode(2);
+		End
+		Else
+		Begin
+			// AUcun contact trouvé
+			if x<1 then
+			Begin
+				SCResults.errmsg:='Aucun owner n''a été trouvé !'
+				logger_NAS(oNasDomClient, SCResults.errmsg, CALLER, LOG_INFO);
+			End
+			Else
+			Begin
+				SCResults.mimetype:='text/comma-separated-values';
+				SCResults.ResponseFile:=fileresult;
+				logger_NAS(oNasDomClient,'Traitement Ok, ' + Int64ToStr(x) + ' owner(s) traité(s)', CALLER, LOG_INFO);
+			End;
+		End;
+		
+		SCResults.savetofile;
+
+		if oNasDomClient<>Nil then oNasDomClient.Free();
+		SCResults.Free();
+		SCParams.Free();
+		FreecloudRes;
+
+		SetExitCode(0);
+	End;
+
+
+End.
