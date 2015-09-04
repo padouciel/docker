@@ -13,15 +13,27 @@ function cleanup()
 	killall -w novaappserver || echo "Error ${?}"
 
 	# no matter to wait for the process end...
-	killall Xvfb || echo "Error : ?{1}"
+	killall Xvfb || echo "Error : ?{?}"
 
 	killall -w fbguard || echo "Error ${?}"
+
+	# Kill other daemons if the've been lauched by this script...
+	killall rsync || true
+	killall stunnel || true
+
+	kill "${tailpid}" || true
 
 	echo "Exited"
 }
 
 # Pour reprendre la main si on stop le container...
 trap "cleanup" HUP INT QUIT KILL TERM
+
+if [[ ! -x "${NAS_ENTRYPOINT_FB}" ]]
+then
+	echo "The environnement variable ENTRYPOINT_FB must be set and pointing to an executable script (in Dockerfile)"
+	exit 1
+fi
 
 
 # On vérifie si des bases domain/event sont présentes
@@ -34,8 +46,8 @@ else
 	 [[ ! -f "${NAS_DB_PATH_DOMAIN}/event.fdb" ]] && CREATE_DB_EVENT=0
 fi
 
-echo "Starting Firebird"
-runuser firebird -s /bin/sh -c "/usr/sbin/fbguard -pidfile /var/run/firebird/firebird.pid -daemon -forever"
+# we start the firebird image entrypoint.sh in background
+${NAS_ENTRYPOINT_FB} -b
 
 if [[ -n "${CREATE_DB_DOM}" || -n "${CREATE_DB_EVENT}" ]]
 then
@@ -55,16 +67,16 @@ then
 		isql-fb -user sysdba -password masterkey -b -i /opt/novaxel/sql_domain/event.sql "'${NAS_DB_PATH_DOMAIN}/event.fdb"
 	fi
 
-	# update NAS conf with the right env variable...
-	sed -i -e 's|\(DOMAIN_DATABASE_URL=\)\(.*\)|\1localhost:'"${NAS_DB_PATH_DOMAIN}"'/domain.fdb|' /opt/novaxel/novaappserver.conf
-	sed -i -e 's|\(EVENT_DATABASE_URL=\)\(.*\)|\1localhost:'"${NAS_DB_PATH_DOMAIN}"'/event.fdb|' /opt/novaxel/novaappserver.conf
-
 fi
 
 
+# update NAS conf with the right env variable...
+sed -i -e 's|\(DOMAIN_DATABASE_URL=\)\(.*\)|\1localhost:'"${NAS_DB_PATH_DOMAIN}"'/domain.fdb|' /opt/novaxel/conf/novaappserver.conf
+sed -i -e 's|\(EVENT_DATABASE_URL=\)\(.*\)|\1localhost:'"${NAS_DB_PATH_DOMAIN}"'/event.fdb|' /opt/novaxel/conf/novaappserver.conf
+
 # Lancement du serveur NAS en arrière plan
 echo "Starting NAS"
-/opt/novaxel/novaappserver/novaappserver.sh -c /opt/novaxel/novaappserver.conf
+/opt/novaxel/novaappserver/novaappserver.sh -c /opt/novaxel/conf/novaappserver.conf -l /var/log/novaxel/novaappserver.log
 # waiting NAS initialization...
 sleep 1
 
@@ -82,5 +94,5 @@ fi
 # wait indefinetely
 while true
 do
-  tail -f /dev/null & wait ${!}
+  tail -f /dev/null & tailpid=${!} && wait "${tailpid}"
 done
