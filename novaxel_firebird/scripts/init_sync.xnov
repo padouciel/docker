@@ -616,8 +616,8 @@ Begin
 							logger('1000 : Le script  "' + rSyncScript + '" :  n''existe pas', CALLER, LOG_ERROR, LogFile);
 							RaiseException(erCustomError, '1000');
 						End;
-						// Le moteur de script est appelé par un script bash d'extension ".sh"
-						IniTempVal:=ExpandFileName(paramstr(0)) + '.sh ' + rSyncScript + ' ' + rSyncScriptOpt;
+						// Le moteur de script 
+						IniTempVal:=ExpandFileName(paramstr(0)) + ' ' + rSyncScript + ' ' + rSyncScriptOpt;
 						
 					End;
 

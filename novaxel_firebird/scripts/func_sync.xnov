@@ -56,11 +56,6 @@ const
 	// Noms des fichiers requête et réponse de synchro
 	SYNC_FILE_REQUEST='sync_req';
 	SYNC_FILE_RESP='sync_resp';
-	// Fichier rsyncd.conf
-	RSYNCD_CONF_NAME='/etc/rsyncd.conf'; //Path absolu FS...
-
-	// Fichier rsynd.secrets
-	RSYNCD_CONF_SECRET='/etc/rsyncd.secret'; //Path absolu FS...
 
 	// suffixe ajouté à LibId pour nommer les modules (sections rsyncd.conf) d'informaiton
 	RSYNCD_MOD_INFO='_info';

@@ -1,2 +1,2 @@
 FBADMIN=sysdba
-FBPASSWD=S6@c12.f2
+FBPASSWD=masterkey

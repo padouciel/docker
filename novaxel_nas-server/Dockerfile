@@ -35,7 +35,7 @@ RUN	mkdir -p /opt/novaxel && \
 
 RUN	cd /opt/novaxel && \
 	7za x -y /tmp/nas-docker.7z && \
-	rm -f /tmp/nas-docker7z && \
+	rm -f /tmp/nas-docker.7z && \
 	mkdir -p /opt/novaxel/htdocs && \
 	cd /opt/novaxel/htdocs && \
 	7za x -y /tmp/www_2.8.4.21_NAS2.6.9.0_APP1.46.6_BASE_V40.7z && \
@@ -43,7 +43,7 @@ RUN	cd /opt/novaxel && \
 	rm -f /tmp/www_2.8.4.21_NAS2.6.9.0_APP1.46.6_BASE_V40.7z && \
 	useradd -r -c "NAS system User" -d /opt/novaxel/novaappserver -M -s /bin/bash novaappserver && \
 	mkdir -p /opt/novaxel/tmp && \
-        chown -R novaappserver:novaappserver /opt/novaxel/tmp
+	chown -R novaappserver:novaappserver /opt/novaxel/tmp
 	
 
 # Default NAS Ports
@@ -54,7 +54,10 @@ EXPOSE 443/tcp
 COPY conf/* /opt/novaxel/conf/
 
 # The NAS scripts
-COPY scripts_nas/* /opt/novaxel/scripts_nas/
+COPY 	scripts_nas/* /opt/novaxel/scripts_nas/
+# This links are mandatory 
+RUN	cd /opt/novaxel/scripts_nas/ && \
+	ln -sf ../scripts/func_nas.xnov ../scripts/local_inc.xnov ./
 
 # TODO
 COPY entrypoint.sh /

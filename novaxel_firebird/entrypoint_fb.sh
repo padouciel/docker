@@ -64,6 +64,8 @@ runuser firebird -s /bin/sh -c "/usr/sbin/fbguard -forever -pidfile /var/run/fir
 if [[ -z "${nosync}" ]]
 then
 	echo "Starting rsync"
+	# Make a "template" copy of rsyncd.conf into the scripts directory for synchro scripts...
+	cp /opt/novaxel/conf/rsyncd.conf /opt/novaxel/scripts/
 	/usr/bin/rsync --daemon --config=/opt/novaxel/conf/rsyncd.conf
 
 	echo "Starting stunnel"

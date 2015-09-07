@@ -13,7 +13,7 @@ write only=yes
 read only=no
 ; Authentification spécifique rsync
 auth users=##own_login##
-pre-xfer exec=/opt/novatools/nscript /opt/novatools/scripts/rsync_script6.xnov prelogsync
+pre-xfer exec=/opt/novaxel/novatools/nscript.sh /opt/novatools/scripts/rsync_script6.xnov prelogsync
 ;post-xfer exec = /opt/novatools/rsync_scripts-4.sh postlogsync
 
 [##lib_id_pad##_info]
@@ -28,6 +28,6 @@ write only=no
 auth users=##own_login##
 ; Autorisation de Download que pour le fichier liste.txt
 filter=+ /liste.txt + /.term + /.conflit + /.env_ok - /*
-pre-xfer exec=/opt/novatools/nscript.sh /opt/novaxel/scripts/rsync_script6.xnov init
-post-xfer exec=/opt/novatools/nscript.sh /opt/novaxel/scripts/rsync_script6.xnov clean
+pre-xfer exec=/opt/novaxel/novatools/nscript.sh /opt/novaxel/scripts/rsync_script6.xnov init
+post-xfer exec=/opt/novaxel/novatools/nscript.sh /opt/novaxel/scripts/rsync_script6.xnov clean
 

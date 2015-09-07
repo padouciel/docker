@@ -10,11 +10,11 @@ Const
 	// Hotes NAS par défaut
 	// Hôte utilisé si mode DEBUG (attention inconditionnel si non vide, ie les autres constantes DEFAULT_NAS_HOST* ne seront PAS prise en compte)
 	// Mettre à '' si non utilisé
-	NAS_DEFAULT_HOST_DEBUG='http://localhost:8000';
+	NAS_DEFAULT_HOST_DEBUG='http://localhost';
 	// Privilégié : HTTPS
 	NAS_DEFAULT_HOST_SSL='https://localhost';
 	// Secondaire HTTP
-	NAS_DEFAULT_HOST='http://localhost:8000';
+	NAS_DEFAULT_HOST='http://localhost';
 
 	// Comportement SSL par défaut
 	NAS_HOST_SSL_SELF_SIGNED_Ok=False;
@@ -41,19 +41,24 @@ Const
 	NAS_RSYNC_PATH='/usr/bin/rsync';
 
 	// Chemin et basename des logs de synchro
-	//LOGSAV_PATH='/var/log/novassav_#id#.log';
-	NAS_LOGSAV_PATH='/var/log/novasav_#id#.log';
+	NAS_LOGSAV_PATH='/var/log/novaxel/novasav_#id#.log';
 
 	// Chemin et basename des logs de synchro (ajouter ID lib ou autre à la fin)
-	NAS_LOGSYNC_PATH='/var/log/novasync_#id#.log';
+	NAS_LOGSYNC_PATH='/var/log/novaxel/novasync_#id#.log';
 
-	NAS_STATS_DU_CLIENT='/srv/novaappserver/htdocs/du_client.csv';
+	NAS_STATS_DU_CLIENT='/opt/novaxel/htdocs/du_client.csv';
 
 
 	{
 		RESTORATION
 	}
 	// Répertoire de base où trouver les sous-rep de restauration (1 sous-rep = 1 id lib)
-	NAS_RESTORE_DIR='/srv/novaappserver/htdocs/restore/';
+	NAS_RESTORE_DIR='/opt/novaxel/htdocs/restore/';
 	// Path relatif à l'espace de restauration du serveur HTTP
 	NAS_RESTORE_HTTP_PATH='/restore';
+
+		// Fichier rsyncd.conf
+	RSYNCD_CONF_NAME='/opt/novaxel/conf/rsyncd.conf'; //Path absolu FS...
+
+	// Fichier rsynd.secrets
+	RSYNCD_CONF_SECRET='/opt/novaxel/conf/rsyncd.secret'; //Path absolu FS...
