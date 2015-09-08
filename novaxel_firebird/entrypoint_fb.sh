@@ -66,6 +66,8 @@ then
 	echo "Starting rsync"
 	# Make a "template" copy of rsyncd.conf into the scripts directory for synchro scripts...
 	cp /opt/novaxel/conf/rsyncd.conf /opt/novaxel/scripts/
+	# Create rsyncd.scret file
+	touch /opt/novaxel/conf/rsyncd.secret && chmod 0660 /opt/novaxel/conf/rsyncd.secret
 	/usr/bin/rsync --daemon --config=/opt/novaxel/conf/rsyncd.conf
 
 	echo "Starting stunnel"
