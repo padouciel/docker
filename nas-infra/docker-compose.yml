@@ -1,20 +1,35 @@
 nas:
-#  build: ../nas-server
-  image: "padouciel/nas-server"
-  ports : 
-    - "8080:8080"
+  image: "novaxel/nas-server"
+  ports :
+    # NAS HTTP1
+    - "61080:80"
+    # NAS HTTP2
+    - "61443:443"
+    # NAS FB (domain, event, demo)
+    - "63050:3050"
+    # Synchro
+    - "60443:60443"
   links: 
     - fbserver
   volumes_from: 
-    - dc
+    - fbserver
+  entrypoint: "/bin/sh"
+  command: yes > /dev/null
 
 fbserver:
-#  build: ../firebird
-  image: "padouciel/firebird"
-  volumes_from: 
-    - dc
-
-dc:
+  image: "novaxel/firebird"
   volumes: 
-    - /var/lib/firebird:/srv/database
+    - /home/patrick/Technique/docker-nas-server-cont/dbs:/srv/nas
+    - /home/patrick/Technique/docker-nas-server-cont/firebird_logs:/var/log/firebird
+    - /home/patrick/Technique/docker-nas-server-cont/novaxel_logs:/var/log/novaxel
+    - /etc/firebird
+    - /opt/novaxel/conf
+    - /var/lib/firebird/system
+    - /opt/novaxel/certs
 
+#dc:
+#  volumes: 
+#  image: "novaxel/data-container"
+#    - /home/patrick/Technique/docker-nas-server-cont/dbs:/srv/nas
+#    - /home/patrick/Technique/docker-nas-server-cont/firebird_logs:/var/log/firebird
+#    - /home/patrick/Technique/docker-nas-server-cont/novaxel_logs:/var/log/novaxel

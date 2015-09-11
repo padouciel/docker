@@ -2,6 +2,8 @@
 
 set -e
 
+set -vx
+
 # Trap function
 function cleanup()
 {

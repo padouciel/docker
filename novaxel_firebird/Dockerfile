@@ -70,5 +70,7 @@ EXPOSE 60443/tcp
 
 
 COPY entrypoint_fb.sh "${ENTRYPOINT_FB}"
-ENTRYPOINT ["/bin/bash", "-cl", "${ENTRYPOINT_FB}"]
+# Don't work :-(
+#ENTRYPOINT ["/bin/bash", "-l", "-c", "${ENTRYPOINT_FB}"]
+ENTRYPOINT ["/bin/bash","-lc", "/entrypoint_fb.sh"]
 
