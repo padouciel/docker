@@ -19,7 +19,7 @@ ENV 	NAS_DB_PATH_DOMAIN="${NAS_DB_PATH:-/srv/nas}/domain" \
 
 # Install packages xkeybord for embedded Xvfb dependencies
 # TODO : find a "no-deps" workaround for the xkeyb* packages (yum don't support no-deps option :-( )
-RUN	yum install -y xkeyboard-config xorg-x11-xkb-utils
+RUN	DEBIAN_FRONTEND=noninteractive apt-get install -y xvfb
 
 # link libc for embedded mono
 RUN	cd /lib64 && \

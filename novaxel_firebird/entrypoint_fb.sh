@@ -12,14 +12,14 @@ function cleanup()
 	then
 
 		echo "stopping stunnel daemon"
-		killall -w stunnel || "Error ${?}"
+		pkill stunnel || "Error ${?}"
 
 		echo "stopping rsync daemon"
-		killall -w rsync || "Error ${?}"
+		pkill rsync || "Error ${?}"
 	fi
 
 	echo "Stopping Firebird"
-	killall -w fbguard || "Error ${?}"
+	pkill fbguard || "Error ${?}"
 
 	kill "${tail_pid}" || true
 
@@ -61,23 +61,26 @@ shift $((OPTIND-1))
 
 # run the services
 echo "Starting Firebird"
-runuser firebird -s /bin/sh -c "/usr/sbin/fbguard -forever -pidfile /var/run/firebird/firebird.pid -daemon"
+sudo -u firebird /usr/sbin/fbguard -forever -pidfile /var/run/firebird/firebird.pid -daemon
 
 if [[ -z "${nosync}" ]]
 then
 	echo "Starting rsync"
+	rsyncd_conf="/opt/novaxel/conf/rsyncd.conf"
 	# Make a "template" copy of rsyncd.conf into the scripts directory for synchro scripts...
-	cp /opt/novaxel/conf/rsyncd.conf /opt/novaxel/scripts/
+	cp "${rsyncd_conf}" /opt/novaxel/scripts/
 	# Create rsyncd.scret file
-	touch /opt/novaxel/conf/rsyncd.secret && chmod 0660 /opt/novaxel/conf/rsyncd.secret
-	/usr/bin/rsync --daemon --config=/opt/novaxel/conf/rsyncd.conf
+	rsync_secrets_file="$(sed -n -e 's/secrets file\s*\=\s*\(.*\)/\1/p' ${rsyncd_conf})"
+	[[ -n "${rsync_secrets_file}" ]] && touch "${rsync_secrets_file}" && chmod 0660 "${rsync_secrets_file}"
+	/usr/bin/rsync --daemon --config="${rsyncd_conf}"
 
 	echo "Starting stunnel"
-	# stunnel runs itself (exec AFAIK ?) as non-priviligied user "nobody"
+	# stunnel exec  as non-priviligied user "nobody" (CentOS) or "stunnel4" (Debian/Ubuntu)
 	stunnel_conf="/opt/novaxel/conf/stunnel.conf"
 	stunnel_pid="$(sed -n -e 's/pid\s*\=\s*\(.*\)/\1/p' ${stunnel_conf})"
 	[[ -n "${stunnel_pid}" ]] && mkdir -p "$(dirname ${stunnel_pid})" && chown "$(sed -n -e 's/setuid\s*\=\s*\(.*\)/\1/p' ${stunnel_conf})" "$(dirname ${stunnel_pid})" || true
-
+	stunnel_log="$(sed -n -e 's/output\s*\=\s*\(.*\)/\1/p' ${stunnel_conf})"
+	[[ -n "${stunnel_log}" ]] && touch "${stunnel_log}" && chown "$(sed -n -e 's/setuid\s*\=\s*\(.*\)/\1/p' ${stunnel_conf})" "${stunnel_log}" || true
 	/usr/bin/stunnel "${stunnel_conf}"
 fi
 

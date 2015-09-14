@@ -10,16 +10,16 @@ function cleanup()
 	# On arrive ici après le trap
 	echo "Stopping NAS"
 
-	killall -w novaappserver || echo "Error ${?}"
+	pkillnovaappserver || echo "Error ${?}"
 
 	# no matter to wait for the process end...
-	killall Xvfb || echo "Error : ?{?}"
+	pkill Xvfb || echo "Error : ?{?}"
 
-	killall -w fbguard || echo "Error ${?}"
+	pkill fbguard || echo "Error ${?}"
 
 	# Kill other daemons if the've been lauched by this script...
-	killall rsync || true
-	killall stunnel || true
+	pkill rsync || true
+	pkill stunnel || true
 
 	kill "${tailpid}" || true
 
@@ -35,6 +35,7 @@ then
 	exit 1
 fi
 
+mkdir -p  "${NAS_DB_PATH_DOMAIN}" && chown -R firebird:firebird "${NAS_DB_PATH_DOMAIN}"
 
 # On vérifie si des bases domain/event sont présentes
 if [[ -z "${NAS_DB_PATH_DOMAIN}" ]]
@@ -51,7 +52,6 @@ ${NAS_ENTRYPOINT_FB} -b
 
 if [[ -n "${CREATE_DB_DOM}" || -n "${CREATE_DB_EVENT}" ]]
 then
-	mkdir -p  "${NAS_DB_PATH_DOMAIN}" && chown -R firebird:firebird "${NAS_DB_PATH_DOMAIN}"
 	mkdir -p /opt/novaxel/sql_domain && cd /opt/novaxel/sql_domain
 	7za e -y  /tmp/sql-domain.7z
 
@@ -76,6 +76,8 @@ sed -i -e 's|\(EVENT_DATABASE_URL=\)\(.*\)|\1localhost:'"${NAS_DB_PATH_DOMAIN}"'
 
 # Lancement du serveur NAS en arrière plan
 echo "Starting NAS"
+# Undex ubuntu, we start a xvfb process before the NAS itself
+/usr/bin/Xvfb :0 -ac -nolisten tcp -fp /opt/novaxel/novaappserver/fonts/ -tst > /tmp/Xvfb.log 2>&1 &
 /opt/novaxel/novaappserver/novaappserver.sh -c /opt/novaxel/conf/novaappserver.conf -l /var/log/novaxel/novaappserver.log
 # waiting NAS initialization...
 sleep 2

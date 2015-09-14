@@ -2,7 +2,7 @@
 # So, it needs the NAS toolboxes and stunnel/rsync for for shynchronizing the FDB files
 # It's also used as the base image for the NAS image (that needs FB, NAS toolbox, etc too)
 
-FROM centos:6
+FROM ubuntu
 
 MAINTAINER Patrick DUBUIS <pdubuis@visiativ.com>
 
@@ -18,34 +18,43 @@ ENV 	NAS_PACK_URL="http://www.novaxel2.com/depotDocker" \
 	TERM=xterm
 
 # French Timezone (for updating correctly the date in databases)
-RUN echo ZONE="$TIMEZONE" > /etc/sysconfig/clock && \
-    cp "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
+RUN 	echo "$TIMEZONE" > /etc/timezone && \
+	dpkg-reconfigure -f noninteractive tzdata
 
-# Install the Firebird super-server from EPEL and glibc.i686 for nas tools (32 bts) + other utils...
-RUN 	yum install -y epel-release && \
-	yum install -y firebird-superserver tar glibc.i686 stunnel rsync p7zip
-
+# Add Firebird PPA into sources list (the install of "software-properties-common" costs a lot of time & disk space :-( )
+# Install needed packages
+RUN	export DEBIAN_FRONTEND=noninteractive && \
+	apt-key adv --keyserver keyserver.ubuntu.com --recv-keys EF648708 && \
+	echo "deb http://ppa.launchpad.net/mapopa/ppa/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/firebird.list && \
+	dpkg --add-architecture i386 && \
+	apt-get -y update && \
+	apt-get -y upgrade && \
+ 	apt-get -y --no-install-recommends install firebird2.5-super stunnel rsync p7zip-full curl libc6:i386 && \
+	cd /usr/bin && \
+	ln -sf stunnel4 stunnel
+ 
 # Unpack the nas-toolbox tar archive AND add usefull env variables into the rights files (bash *login*)
 RUN     mkdir -p /opt/novaxel && \
 	cd /tmp && \
 	curl -O ${NAS_PACK_URL}/firebird/nas-toolbox.7z  && \
 	cd /opt/novaxel && \
-        7za x -y /tmp/nas-toolbox.7z && \
+        7z x -y /tmp/nas-toolbox.7z && \
         rm -f /tmp/nas-toolbox.7z && \
         chown -R root:root /opt/novaxel && \
-        echo "export LD_LIBRARY_PATH=/opt/novaxel/novatools/libs" >> /etc/profile.d/nastools.sh  && \
-        echo "PATH=$PATH:/opt/novaxel/novatools/bin" >> /etc/profile.d/nastools.sh
+        echo "export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/novaxel/novatools/libs" >> /etc/profile.d/nastools.sh  && \
+        echo "PATH=$PATH:/opt/novaxel/novatools/bin" >> /etc/profile.d/nastools.sh && \
+        echo "touch /tmp/$(basename $0).ok" >> /etc/profile.d/nastools.sh
 
 	
-# Root DB Path : the domain & event DBs are located in this path under "domain" subdir, and the customer's DBs in "tenants" subdir
+# Root DB Path : the domain & event DBs are located in this path under "domain" subdir, and the customer's DBs in "tenants ID" subdir (eg. 0000000180/000000253)
 # Logs (for DB, possibly Audit, etc...)
 # FB config
 # FB Data system (security.fdb [FB users ans rôles], udf Novaxel, etc...)
 # a  volume for adding new certs and keep there persistents
 VOLUME ["$NAS_DB_PATH", "/var/log/firebird", "/var/log/novaxel", "/etc/firebird", "/opt/novaxel/conf" , "/var/lib/firebird/system", "/opt/novaxel/certs"]
 
-# We provide a conf file for Novaxel...
-COPY conf/firebird.conf /etc/firebird/
+# We provide a conf file for Novaxel (the ubuntu firebird package use a sub-dir in conf...)
+COPY conf/firebird.conf /etc/firebird/2.5/
 
 # Tools conf
 # Copy configuration file in right places
