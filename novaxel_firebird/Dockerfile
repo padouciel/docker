@@ -10,16 +10,18 @@ MAINTAINER Patrick DUBUIS <pdubuis@visiativ.com>
 ENV 	NAS_PACK_URL="http://www.novaxel2.com/depotDocker" \
 	# Where the DBs are located (this env variable is used by many tools in this image AND others) \
 	NAS_DB_PATH="/srv/nas" \
-	NAS_DOCKER_FB_VERSION=4 \
+	NAS_DOCKER_FB_VERSION=5 \
 	TIMEZONE="Europe/Paris" \
+	LC_ALL="C.UTF-8" \
 	# The entrypoint stuff... \
 	NAS_ENTRYPOINT_FB="/entrypoint_fb.sh" \
 	# We must reinitialized this variable ! I don't know why, but after the entrypoint above, we have "TERM=dumb" (instead of "TERM=xterm") ? \
 	TERM=xterm
 
-# French Timezone (for updating correctly the date in databases)
+# French Timezone && locale(for updating correctly the date in databases)
 RUN 	echo "$TIMEZONE" > /etc/timezone && \
-	dpkg-reconfigure -f noninteractive tzdata
+	dpkg-reconfigure -f noninteractive tzdata && \
+	update-locale LANG=C.UTF-8
 
 # Add Firebird PPA into sources list (the install of "software-properties-common" costs a lot of time & disk space :-( )
 # Install needed packages

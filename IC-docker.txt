@@ -20,11 +20,11 @@ Points sur IC NAS Docker (SVI 15/09) :
 
 	- certs NAS (commun Windows ?) : vérifier si compatible avec NAS Linux, mais normalement, oui
 
-	- scripts clients (spcéifiques NAS docker à unifer NAS hosrs docker...)
+	- scripts clients (spcéifiques NAS docker à unifier NAS hors docker...)
 
 - Images NAS
 
-	- NAS (grosse arbo +/- 400 Mo 64 bits) : PAD finaliser package 7z (enlever sqlged)
+	- NAS (grosse arbo +/- 400 Mo 64 bits) : PAD finaliser package 7z
 		* bin/
 		* libs/
 		* fonts/
@@ -45,9 +45,9 @@ Points sur IC NAS Docker (SVI 15/09) :
 	- Modèles de Bib pour provisionnement (commun Windows ???)
 
 
-Process alimentation idem que NAS Windows :
+Process alimentation (dépose) idem que NAS Windows :
 
-	- R&D dépose les fichiers dans les bons répertoires (bin, lib, scripts, etc...)
+	- R&D dépose les fichiers dans les bons répertoires (bin, lib, scripts, etc...) de "IC Novaxel"
 
 
 
@@ -55,10 +55,16 @@ Process mise à disposition utilistaeurs (jenkins ?)
 
 	- Compresser les ressources
 
-	- Les mettre à dispo dans un espace FTP/WWW donné et spécifique (en "packages" 7z séparés, ie conf.7z, scripts.7z, etc...)
+	- Les mettre à dispo dans un espace FTP/WWW donné et spécifique  ("depotDocker" ?) (en "packages" 7z séparés, ie conf.7z, scripts.7z, etc...)
 
-	- Voir procédure de version de prod (idem celle Windows sous jenkins ?)
+	- Voir procédure de version de prod (idem celle Windows sous jenkins ?), idéalement :
+		* Une version spécifique IC (journalière ou autre)
+		* Une version taguée "prod"	
 
+
+Voir possibiité intervention PDU sur jenkins :
+
+	- Modifier les process (ajout/suppression de fichier, etc...)
 
 Voir possibiités CVS (svn, git, autre) ?
 
