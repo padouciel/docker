@@ -46,8 +46,9 @@ RUN	cd /tmp && \
 # Unpack the nas-toolbox archive AND add usefull env variables into the rights files (bash *login*)
 RUN	mkdir -p /opt/novaxel && \
 	cd /opt/novaxel && \
-        7z x -y /tmp/nas-toolbox.7z && \
-        rm -f /tmp/nas-toolbox.7z && \
+	        7z x -y /tmp/nas-toolbox.7z && \
+		chmod -R +x /opt/novaxel/novatools/*.sh /opt/novaxel/novatools/bin/* && \
+	        rm -f /tmp/nas-toolbox.7z && \
 	cd /tmp && \
 		7z x -y /tmp/conf.7z && \
 			cp firebird.conf /etc/firebird/2.5/ && \

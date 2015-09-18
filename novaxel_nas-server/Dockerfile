@@ -40,10 +40,7 @@ RUN	mkdir -p /opt/novaxel && \
 	cd /opt/novaxel && \
 		7za x -y /tmp/nas-docker.7z && \
 		rm -f /tmp/nas-docker.7z && \
-	mkdir -p /opt/novaxel/htdocs && \
-	cd /opt/novaxel/htdocs && \
-		7za x -y /tmp/client_WEB.7z && \
-		chmod -R a+rX /opt/novaxel/htdocs && \
+		chmod -R +x /opt/novaxel/*.sh /opt/novaxel/novaappserver/novaappserver /opt/novaxel/novaappserver/rtf2html /opt/novaxel/novaappserver/wkhtmltoimage-amd64 && \
 		rm -f /tmp/client_WEB.7z && \
 	mkdir -p /opt/novaxel/conf && \
 	cd /opt/novaxel/conf/ && \
