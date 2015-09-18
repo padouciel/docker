@@ -45,15 +45,15 @@ RUN	mkdir -p /opt/novaxel && \
 		7za x -y /tmp/client_WEB.7z && \
 		chmod -R a+rX /opt/novaxel/htdocs && \
 		rm -f /tmp/client_WEB.7z && \
-	mkdir -p /opt/novaxel/conf
-	cd /opt/novaxel/conf/
+	mkdir -p /opt/novaxel/conf && \
+	cd /opt/novaxel/conf/ && \
 		7za x -y /tmp/conf.7z && \
 		rm -f /tmp/conf.7z && \
-	mkdir -p /opt/novaxel/scripts_nas
-	cd /opt/novaxel/scripts_nas
+	mkdir -p /opt/novaxel/scripts_nas && \
+	cd /opt/novaxel/scripts_nas && \
 		7za x -y /tmp/scripts_nas.7z && \
 		rm -f /tmp/scripts_nas.7z && \
-	cd /opt/novaxel/novaappserver
+	cd /opt/novaxel/novaappserver && \
 		7za x -y /tmp/sqlged.7z && \
 		rm -f /tmp/sqlged.7z && \
 	useradd -r -c "NAS system User" -d /opt/novaxel/novaappserver -M -s /bin/bash novaappserver && \
