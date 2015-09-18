@@ -1,4 +1,4 @@
-nas:
+nas-server:
   image: "novaxel/nas-server"
   ports :
     # NAS HTTP1
@@ -9,27 +9,26 @@ nas:
     - "63050:3050"
     # Synchro
     - "60443:60443"
-  links: 
-    - fbserver
   volumes_from: 
-    - fbserver
-  entrypoint: "/bin/sh"
-  command: yes > /dev/null
+    - data-container
+  links:
+    - fb-nas
+  hostname: nas-server
 
-fbserver:
+fb-nas:
   image: "novaxel/firebird"
+  ports:
+    # FB (customers DBs)
+    - "63051:3050"
+    - "60444:60443"
+  volumes_from: 
+    - data-container
+  hostname: fb-server-1
+
+
+data-container:
+  image: "novaxel/data-container"
   volumes: 
-    - /home/patrick/Technique/docker-nas-server-cont/dbs:/srv/nas
+    - /home/patrick/Technique/docker-nas-server-cont/dbs:/srv/databases
     - /home/patrick/Technique/docker-nas-server-cont/firebird_logs:/var/log/firebird
     - /home/patrick/Technique/docker-nas-server-cont/novaxel_logs:/var/log/novaxel
-    - /etc/firebird
-    - /opt/novaxel/conf
-    - /var/lib/firebird/system
-    - /opt/novaxel/certs
-
-#dc:
-#  volumes: 
-#  image: "novaxel/data-container"
-#    - /home/patrick/Technique/docker-nas-server-cont/dbs:/srv/nas
-#    - /home/patrick/Technique/docker-nas-server-cont/firebird_logs:/var/log/firebird
-#    - /home/patrick/Technique/docker-nas-server-cont/novaxel_logs:/var/log/novaxel

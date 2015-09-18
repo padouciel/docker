@@ -78,6 +78,8 @@ sed -i -e 's|\(EVENT_DATABASE_URL=\)\(.*\)|\1localhost:'"${NAS_DB_PATH_DOMAIN}"'
 echo "Starting NAS"
 # Undex ubuntu, we start a xvfb process before the NAS itself
 /usr/bin/Xvfb :0 -ac -nolisten tcp -fp /opt/novaxel/novaappserver/fonts/ -tst > /tmp/Xvfb.log 2>&1 &
+# wait for XVfb start...
+sleep 1
 /opt/novaxel/novaappserver/novaappserver.sh -c /opt/novaxel/conf/novaappserver.conf -l /var/log/novaxel/novaappserver.log
 # waiting NAS initialization...
 sleep 2

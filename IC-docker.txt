@@ -1,10 +1,27 @@
 Points sur IC NAS Docker (SVI 15/09) :
 
+Machines :
+http://vsw-buildisf.axemble.com:8080/
+rsp : vsw-buildisf.axemble.com
+
 
 - Espace disque FTP easy hébergement (voir taille image) ?
 
 
 À mettre dans "IC Novaxel" (non compressé)
+
+==> Moi
+
+==> Le commun dans "Bin"
+==> Le particulier dans "Bin_docker"
+	==> Arbo à organiser...
+
+==> Poser les scripts de déploiement dans "Scripts docker"
+
+
+==> Séb sur cette partie
+==> ça sort dans "Output Docker" ==> "depotDocker" en FTP/WWW final...
+
 
 - Image Firebird :
 
@@ -39,15 +56,19 @@ Points sur IC NAS Docker (SVI 15/09) :
 	- conf/ (conf spécifique NAS Docker sauf mimetype et voir ps_xnov.lst ?)
 
 	- scripts serveur (commun Windows ???)
+==> Bil_linux
 
 	- BIB DEMO min (commun Windows ???)
+==> nas/dbo...
 
 	- Modèles de Bib pour provisionnement (commun Windows ???)
+==>  à voir...
 
 
 Process alimentation (dépose) idem que NAS Windows :
 
 	- R&D dépose les fichiers dans les bons répertoires (bin, lib, scripts, etc...) de "IC Novaxel"
+	==> à voir avec R&D
 
 
 

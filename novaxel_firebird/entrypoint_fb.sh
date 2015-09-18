@@ -61,6 +61,10 @@ shift $((OPTIND-1))
 
 # run the services
 echo "Starting Firebird"
+chown -R firebird:firebird /var/log/firebird
+chown -R firebird:firebird /var/run/firebird
+[[ -n "${NAS_DB_PATH}" ]] && chown -R firebird:firebird  "${NAS_DB_PATH}"
+
 sudo -u firebird /usr/sbin/fbguard -forever -pidfile /var/run/firebird/firebird.pid -daemon
 
 if [[ -z "${nosync}" ]]
@@ -69,9 +73,11 @@ then
 	rsyncd_conf="/opt/novaxel/conf/rsyncd.conf"
 	# Make a "template" copy of rsyncd.conf into the scripts directory for synchro scripts...
 	cp "${rsyncd_conf}" /opt/novaxel/scripts/
-	# Create rsyncd.scret file
+	# Create empty rsyncd.scret file
 	rsync_secrets_file="$(sed -n -e 's/secrets file\s*\=\s*\(.*\)/\1/p' ${rsyncd_conf})"
 	[[ -n "${rsync_secrets_file}" ]] && touch "${rsync_secrets_file}" && chmod 0660 "${rsync_secrets_file}"
+	# remove rsync pid file if exists...
+	rm -f "$(sed -n -e 's/pid file\s*\=\s*\(.*\)/\1/p' ${rsyncd_conf})"
 	/usr/bin/rsync --daemon --config="${rsyncd_conf}"
 
 	echo "Starting stunnel"
