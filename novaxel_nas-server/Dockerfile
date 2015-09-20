@@ -52,11 +52,8 @@ RUN	mkdir -p /opt/novaxel/conf/ && \
 		ls -la && \
 		7za e -y /tmp/conf.7z && \
 		rm -f /tmp/conf.7z && \
-		ls -la
-
-EXIT
-
-RUN	mkdir -p /opt/novaxel/scripts_nas && \
+		ls -la && \
+	mkdir -p /opt/novaxel/scripts_nas && \
 	cd /opt/novaxel/scripts_nas && \
 		7za x -y /tmp/scripts_nas.7z && \
 		rm -f /tmp/scripts_nas.7z && \
