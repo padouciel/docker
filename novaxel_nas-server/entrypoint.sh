@@ -88,7 +88,7 @@ if [[ -n "${CREATE_DB_DOM}" ]]
 then
 	mkdir -p "${NAS_DB_PATH}/demo" && cd "${NAS_DB_PATH}/demo"
 	# On init la base et créé le compte DEMO
-	7za x -y /tmp/bibdemo-min.7z
+	7za x -y /tmp/bibdemo.7z
 	chown -R firebird:firebird "${NAS_DB_PATH}"
 	sed -i -e 's|\(cBIB_REP=\)\(.*\);|\1'"'${NAS_DB_PATH}/demo/';"'|' /opt/novaxel/sql_domain/init_domain.xnov
 	sed -i -e 's|\(.*demo2.*;\)|//\1|I' /opt/novaxel/sql_domain/init_domain.xnov
