@@ -82,7 +82,8 @@ RUN	mkdir -p /opt/novaxel && \
 # FB config
 # FB Data system (security.fdb [FB users an roles], udf Novaxel, etc...)
 # a  volume for adding new certs and keep there persistents
-VOLUME ["$NAS_DB_PATH", "/var/log/firebird", "/var/log/novaxel", "/etc/firebird", "/opt/novaxel/conf" , "/var/lib/firebird/system", "/opt/novaxel/certs"]
+VOLUME ["$NAS_DB_PATH", "/var/log/firebird", "/var/log/novaxel"]
+#"/etc/firebird", "/opt/novaxel/conf" , "/var/lib/firebird/system", "/opt/novaxel/certs"]
 
 # The firebird port
 EXPOSE 3050/tcp

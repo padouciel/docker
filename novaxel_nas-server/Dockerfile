@@ -47,8 +47,8 @@ RUN	mkdir -p /opt/novaxel && \
                 chmod -R a+rX /opt/novaxel/htdocs && \
 		rm -f /tmp/client_WEB.7z
 
-RUN	mkdir -p /opt/novaxel/conf/conf && \
-	cd /opt/novaxel/conf/conf && \
+RUN	mkdir -p /opt/novaxel/conf/ && \
+	cd /opt/novaxel/conf && \
 		ls -la && \
 		7za e -y /tmp/conf.7z && \
 		rm -f /tmp/conf.7z && \
