@@ -49,15 +49,18 @@ RUN	mkdir -p /opt/novaxel && \
 	        7z x -y /tmp/nas-toolbox.7z && \
 		chmod -R +x /opt/novaxel/novatools/*.sh /opt/novaxel/novatools/bin/* && \
 	        rm -f /tmp/nas-toolbox.7z && \
-	cd /tmp && \
+	mkdir /tmp/conf_tools && \
+	cd /tmp/conf_tools && \
 		7z x -y /tmp/conf.7z && \
-			cp firebird.conf /etc/firebird/2.5/ && \
-			mkdir -p /opt/novaxel/conf && \
-			cp stunnel.conf rsyncd.conf /opt/novaxel/conf/ && \
-			rm -f /tmp/conf.7z && \
+		cp firebird.conf /etc/firebird/2.5/ && \
+		mkdir -p /opt/novaxel/conf && \
+		cp stunnel.conf rsyncd.conf /opt/novaxel/conf/ && \
+		rm -Rf /tmp/conf_tools && \
+		rm -f /tmp/conf.7z && \
 	mkdir -p /opt/novaxel/scripts && \
 	cd /opt/novaxel/scripts && \
 		7z x -y /tmp/scripts.7z && \
+		chmod -R +x /opt/novaxel/scripts/*.sh && \
 		rm -f /tmp/scripts.7z && \
 	mkdir -p /opt/novaxel/udf && \
 	cd /opt/novaxel/udf && \

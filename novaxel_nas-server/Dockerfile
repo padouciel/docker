@@ -39,14 +39,24 @@ RUN	mkdir -p /opt/novaxel && \
 RUN	mkdir -p /opt/novaxel && \
 	cd /opt/novaxel && \
 		7za x -y /tmp/nas-docker.7z && \
+		chmod -Rf +x /opt/novaxel/novaappserver/*.sh /opt/novaxel/novaappserver/novaappserver /opt/novaxel/novaappserver/rtf2html /opt/novaxel/novaappserver/wkhtmltoimage-amd64 /opt/novaxel/novaappserver/bin/* || true && \
 		rm -f /tmp/nas-docker.7z && \
-		chmod -R +x /opt/novaxel/*.sh /opt/novaxel/novaappserver/novaappserver /opt/novaxel/novaappserver/rtf2html /opt/novaxel/novaappserver/wkhtmltoimage-amd64 && \
-		rm -f /tmp/client_WEB.7z && \
-	mkdir -p /opt/novaxel/conf && \
-	cd /opt/novaxel/conf/ && \
-		7za x -y /tmp/conf.7z && \
+	mkdir -p /opt/novaxel/htdocs && \
+        cd /opt/novaxel/htdocs && \
+                7za x -y /tmp/client_WEB.7z && \
+                chmod -R a+rX /opt/novaxel/htdocs && \
+		rm -f /tmp/client_WEB.7z
+
+RUN	mkdir -p /opt/novaxel/conf/conf && \
+	cd /opt/novaxel/conf/conf && \
+		ls -la && \
+		7za e -y /tmp/conf.7z && \
 		rm -f /tmp/conf.7z && \
-	mkdir -p /opt/novaxel/scripts_nas && \
+		ls -la
+
+EXIT
+
+RUN	mkdir -p /opt/novaxel/scripts_nas && \
 	cd /opt/novaxel/scripts_nas && \
 		7za x -y /tmp/scripts_nas.7z && \
 		rm -f /tmp/scripts_nas.7z && \

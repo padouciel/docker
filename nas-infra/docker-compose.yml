@@ -1,0 +1,34 @@
+nas-server:
+  image: "novaxel/nas-server"
+  ports :
+    # NAS HTTP1
+    - "61080:80"
+    # NAS HTTP2
+    - "61443:443"
+    # NAS FB (domain, event, demo)
+    - "63050:3050"
+    # Synchro
+    - "60443:60443"
+  volumes_from: 
+    - data-container
+  links:
+    - fb-nas
+  hostname: nas-server
+
+fb-nas:
+  image: "novaxel/firebird"
+  ports:
+    # FB (customers DBs)
+    - "63051:3050"
+    - "60444:60443"
+  volumes_from: 
+    - data-container
+  hostname: fb-server
+
+
+data-container:
+  image: "novaxel/data-container"
+  volumes: 
+    - /tmp/docker-vol/dbs:/srv/databases
+    - /tmp/docker-vol/fb_logs:/var/log/firebird
+    - /tmp/docker-vol/novaxel_logs:/var/log/novaxel
