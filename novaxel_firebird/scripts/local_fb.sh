@@ -1,2 +1,0 @@
-FBADMIN=sysdba
-FBPASSWD=masterkey
