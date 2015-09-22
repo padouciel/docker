@@ -1,4 +1,4 @@
 # Default...
 * text oel=lf
 
-*.sh text
+*.sh text eol=lf
