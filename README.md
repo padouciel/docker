@@ -69,11 +69,19 @@ C'est cette dernière image qui sera installée sur un poste de Développement..
 
 * Admin :
   * Compte serveur :
-  ![admin_srv](./res/admin_srv.png)
+
+    ![admin_srv](./res/admin_srv.png)
+
   * Serveur Firebird :
-  ![admin_fb](./res/admin_fb.png)
+
+    ![admin_fb](./res/admin_fb.png)
+
   * DB Démo (penser à au Mode "Dépose de documents" pour synchroniser) :
-  ![admin_dbs](./res/admin_db_demo.png)
+
+      ![admin_dbs](./res/admin_db_demo.png)
+
 * Novaxel Client lourd (synchronisation DB) :
+
   ![sync1](./res/novaxel_sync1.png)
+
   ![sync2](./res/novaxel_sync2.png)
