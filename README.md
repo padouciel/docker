@@ -38,12 +38,14 @@ C'est cette dernière image qui sera installée sur un poste de Développement..
   * au premier lancement, ceci va créer et lancer une VM VirtualBox "Default" (ça peut-être long...)
   * Pour vérifier l'adresse IP du réseau privé Virtualbox affectée à la VM : `docker-machine env --shell cmd default` : ce devrait être 192.168.99.100 par défaut)
   * C'est sur cette VM que fonctionnera le serveur Docker (donc sur cette adresse que l'on trouvera les ports à utiliser pour accéder aux différents services des containers)
+  * Installer le client Cloud Novaxel : [client Cloud](http://www.novaxel2.com/depot2015/ClientNovaxel14200.exe) : http://www.novaxel2.com/depot2015/ClientNovaxel14200.exe
+  * Installer le client lourd Novaxel [client lourd](http://www.novaxel2.com/depot2015/Setup_NOVAXEL_4.5.2.8.exe) : http://www.novaxel2.com/depot2015/Setup_NOVAXEL_4.5.2.8.exe
 * Création de l'image :
   * à partir de la console "Docker QuickStart terminal"
-  * lancer la commande : ```./build.sh novaxel/nas_firebird && ./build.sh novaxel/nas-server```
+  * lancer la commande : ```./tools/build.sh novaxel/nas_firebird && ./toosl/build.sh novaxel/nas-server```
   * Ceci va télécharger tous les éléments nécessaires et construire les images docker (ça peut-être long...)
 * Utilisation de l'image (ie. lancement du container)
-  * Configuration standard : lancer ```./start-nas-dev.sh```
+  * Configuration standard : lancer ```./tools/start-nas-dev.sh```
 
 
 
