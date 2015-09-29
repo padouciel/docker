@@ -33,10 +33,10 @@ C'est cette dernière image qui sera installée sur un poste de Développement..
 
 * Prérequis :
   * récuper le dépôt git (ceci doit-être fait si ce document est en cours de lecture ;-) )
-  * installation de [_docker toolbox_](https://www.docker.com/toolbox)
-  * lancement de "Docker QuickStart terminal" sur le bureau (ou équivalent menu `Démmarer/Docker`)
+  * installation de [docker toolbox](https://www.docker.com/toolbox) : https://www.docker.com/toolbox
+  * lancement de "Docker QuickStart terminal" sur le bureau (ou équivalent menu `Démarrer/Docker`)
   * au premier lancement, ceci va créer et lancer une VM VirtualBox "Default" (ça peut-être long...)
-  * Pour vérifier l'adresse IP du réseau privé Virtualbox affectée à la VM : `docker env --shell cmd default` : ce devrait être 192.168.99.100 par défaut)
+  * Pour vérifier l'adresse IP du réseau privé Virtualbox affectée à la VM : `docker-machine env --shell cmd default` : ce devrait être 192.168.99.100 par défaut)
   * C'est sur cette VM que fonctionnera le serveur Docker (donc sur cette adresse que l'on trouvera les ports à utiliser pour accéder aux différents services des containers)
 * Création de l'image :
   * à partir de la console "Docker QuickStart terminal"
@@ -46,23 +46,24 @@ C'est cette dernière image qui sera installée sur un poste de Développement..
   * Configuration standard : lancer ```./start-nas-dev.sh```
 
 
+
 ## Accès aux ressources et paramètres (configuration standard)
 
 * Configuration :
   * ```/opt/novaxel/conf/``` : tous les fichiers de conf sauf :
-  * ```/etc/firebird/2.5/``` : la configuration spécifique Firebird
+  * ```/etc/firebird/2.5/``` : les fichiers de configuration spécifiques Firebird
 * Bases de données :
   * ```/srv/databases/domain``` : bases domain + event
-  * ```/srv/databases/demo``` : bases de démo livrée initialement
+  * ```/srv/databases/demo``` : base GED démo livrée initialement
   * ```/srv/databases/XXXXXX/YYYYYY``` : bases GED (XXXXXX = tenantID, YYYYYY = DBID)
 * logs :
   * ```/var/log/novaxel``` : journalisation du serveur d'application + outils
   * ```/var/log/firebird``` : journalisation Firebird
 * Ports :
-  * IP_VM_VB:3050 : Firebird (auth : sysdba/masterkey)
-  * IP_VM_VB:80/443 : Serveur d'application Novaxel (auth : admin/AdminPass et DEMO/DEMO) + Client WEB (auth DEMO/DEMO)
+  * IP_VM_VBOX:3050 : Firebird (auth : sysdba/masterkey)
+  * IP_VM_VBOX:80/443 : Serveur d'application Novaxel (auth : Admin domaine : admin/AdminPass et compte DEMO : DEMO/DEMO) + Client WEB (auth DEMO/DEMO)
     * Attention, le certificat fourni en exemple est self signed
-  * IP_VM_VB:60443 : Port de synchronisation (même certificat SSL)
+  * IP_VM_VBOX:60443 : Port de synchronisation (même certificat SSL)
 
 
 ## Paramétrages
